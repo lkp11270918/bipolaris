@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: bipolaris-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: RAG_TOP_K
+        value: "4"
+      - key: RAG_MIN_SCORE
+        value: "0.32"
+      - key: MAX_ADVICE_ITEMS
+        value: "3"
+      - key: MAX_QUESTIONS_PER_REPLY
+        value: "1"
+      - key: MAX_OUTPUT_TOKENS
+        value: "850"
+      - key: OPENAI_API_KEY
+        sync: false
