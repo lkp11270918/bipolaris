@@ -80,12 +80,15 @@ class RagStore:
 
     def load_documents(self) -> list[RagDocument]:
         with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT doc_id, source, text, retrieval_text, metadata_json, embedding_json
-                FROM rag_documents
-                """
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT doc_id, source, text, retrieval_text, metadata_json, embedding_json
+                    FROM rag_documents
+                    """
+                ).fetchall()
+            except sqlite3.Error:
+                return []
         docs: list[RagDocument] = []
         for row in rows:
             docs.append(
@@ -102,5 +105,8 @@ class RagStore:
 
     def count_documents(self) -> int:
         with self.connect() as conn:
-            row = conn.execute("SELECT COUNT(*) AS count FROM rag_documents").fetchone()
+            try:
+                row = conn.execute("SELECT COUNT(*) AS count FROM rag_documents").fetchone()
+            except sqlite3.Error:
+                return 0
         return int(row["count"])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sqlite3
 from collections import Counter
 from typing import Any
 
@@ -34,7 +35,10 @@ class LocalRetriever:
 
     def _load_docs(self) -> list[RagDocument]:
         if self._docs is None:
-            self._docs = [doc for doc in self.store.load_documents() if doc.embedding]
+            try:
+                self._docs = [doc for doc in self.store.load_documents() if doc.embedding]
+            except sqlite3.Error:
+                self._docs = []
         return self._docs
 
     def refresh(self) -> None:
