@@ -95,9 +95,9 @@ function renderWelcome() {
         <p class="lead">专为双相情感障碍设计的<br />AI 情绪陪伴助手</p>
       </div>
       <div class="feature-list">
-        ${feature("状态感知支持", "根据平稳、抑郁、躁狂或混合状态提供更贴近处境的回复。", "1")}
-        ${feature("危机识别与分流", "识别高风险信号，在危机时刻引导你获得真实帮助。", "2")}
-        ${feature("复诊状态摘要", "记录每日情绪波动，帮助整理复诊前的状态信息。", "3")}
+        ${feature("状态感知支持", "根据平稳、抑郁、躁狂或混合状态提供更贴近处境的回复。", "心")}
+        ${feature("危机识别与分流", "识别高风险信号，在危机时刻引导你获得真实帮助。", "盾")}
+        ${feature("复诊状态摘要", "记录每日情绪波动，帮助整理复诊前的状态信息。", "记")}
       </div>
       <div>
         <button class="primary-button" data-action="go-disclaimer">了解更多并开始</button>
@@ -292,7 +292,8 @@ function renderMain() {
 }
 
 function tabButton(key, label) {
-  return `<button class="tab-button ${activeTab === key ? "active" : ""}" data-tab="${key}">${label}</button>`
+  const icons = { chat: "○", report: "□", settings: "◇" }
+  return `<button class="tab-button ${activeTab === key ? "active" : ""}" data-tab="${key}"><span>${icons[key]}</span><br />${label}</button>`
 }
 
 function renderChat() {
@@ -321,7 +322,7 @@ function renderChat() {
       <section class="composer-wrap">
         <form class="composer" id="chatForm">
           <textarea id="chatInput" rows="1" placeholder="说说你现在的感受..."></textarea>
-          <button class="send" type="submit">发</button>
+          <button class="send" type="submit" aria-label="发送">→</button>
         </form>
         <p class="fine-print">AI 不替代医疗 · 危机请拨 120 或 400-161-9995</p>
       </section>
@@ -335,7 +336,7 @@ function renderMessage(message) {
     : ""
   const feedback =
     message.role === "assistant"
-      ? `<div class="meta-line"><span class="small">${risk || "Bipolaris"}</span><div class="feedback"><button data-feedback="helpful" data-id="${message.id}">好</button><button data-feedback="not_helpful" data-id="${message.id}">差</button></div></div>`
+      ? `<div class="meta-line"><span class="small">${risk || "Bipolaris"}</span><div class="feedback"><button data-feedback="helpful" data-id="${message.id}" aria-label="有帮助">♡</button><button data-feedback="not_helpful" data-id="${message.id}" aria-label="无帮助">×</button></div></div>`
       : ""
   return `
     <article class="message-row ${message.role}">
