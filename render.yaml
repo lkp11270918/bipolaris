@@ -3,7 +3,7 @@ services:
     name: bipolaris-api
     runtime: python
     plan: free
-    buildCommand: pip install -r backend/requirements.txt
+    buildCommand: pip install -r backend/requirements.txt && python -m backend.scripts.bootstrap_rag_data --esconv-max-turns 120 --bipolar-max-docs 160
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
