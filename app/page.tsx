@@ -1,12 +1,12 @@
 "use client"
 
 import { useState } from "react"
-import { BarChart2, MessageCircle, Settings } from "lucide-react"
-import { ChatScreen } from "@/components/chat-screen"
+import { MessageCircle, BarChart2, Settings } from "lucide-react"
+import { WelcomeScreen } from "@/components/welcome-screen"
 import { CheckinScreen, type CheckinData } from "@/components/checkin-screen"
+import { ChatScreen } from "@/components/chat-screen"
 import { ReportScreen } from "@/components/report-screen"
 import { SettingsScreen } from "@/components/settings-screen"
-import { WelcomeScreen } from "@/components/welcome-screen"
 import { saveMoodLog } from "@/lib/bipolaris-api"
 
 type AppPhase = "welcome" | "checkin" | "main"
@@ -29,7 +29,7 @@ export default function Page() {
 
   if (phase === "welcome") {
     return (
-      <div className="mx-auto max-w-md" style={{ height: "100dvh" }}>
+      <div className="max-w-md mx-auto" style={{ height: "100dvh" }}>
         <WelcomeScreen onComplete={() => setPhase("checkin")} />
       </div>
     )
@@ -37,12 +37,11 @@ export default function Page() {
 
   if (phase === "checkin") {
     return (
-      <div className="mx-auto max-w-md" style={{ height: "100dvh" }}>
+      <div className="max-w-md mx-auto" style={{ height: "100dvh" }}>
         <CheckinScreen
           onComplete={(data) => {
-            const nextData = data.state === "unknown" ? { ...data, state: "stable" as const } : data
-            setCheckinData(nextData)
-            saveMoodLog(nextData)
+            setCheckinData(data)
+            saveMoodLog(data)
             setPhase("main")
           }}
         />
@@ -57,10 +56,14 @@ export default function Page() {
   ]
 
   return (
-    <div className="mx-auto flex max-w-md flex-col bg-background" style={{ height: "100dvh" }}>
+    <div
+      className="max-w-md mx-auto flex flex-col bg-background"
+      style={{ height: "100dvh" }}
+    >
+      {/* 主内容区 — 撑满剩余高度，Chat 内部自己管理 flex 布局 */}
       <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
         {activeTab === "chat" && (
-          <div className="flex h-full flex-col">
+          <div className="h-full flex flex-col">
             <ChatScreen checkinData={checkinData} />
           </div>
         )}
@@ -76,7 +79,8 @@ export default function Page() {
         )}
       </div>
 
-      <div className="shrink-0 border-t border-border bg-card" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+      {/* 底部导航 */}
+      <div className="shrink-0 bg-card border-t border-border" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
         <div className="flex px-2">
           {tabs.map(({ key, label, Icon }) => {
             const isActive = activeTab === key
@@ -84,10 +88,14 @@ export default function Page() {
               <button
                 key={key}
                 onClick={() => setActiveTab(key)}
-                className={`relative flex flex-1 flex-col items-center gap-0.5 py-3 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`}
+                className={`flex-1 flex flex-col items-center py-3 gap-0.5 transition-colors relative ${
+                  isActive ? "text-primary" : "text-muted-foreground"
+                }`}
               >
-                {isActive && <div className="absolute left-1/2 top-0 h-0.5 w-8 -translate-x-1/2 rounded-full bg-primary" />}
-                <Icon className={`h-5 w-5 transition-all ${isActive ? "scale-110" : ""}`} />
+                {isActive && (
+                  <div className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-primary rounded-full" />
+                )}
+                <Icon className={`w-5 h-5 transition-all ${isActive ? "scale-110" : ""}`} />
                 <span className="text-xs font-medium">{label}</span>
               </button>
             )

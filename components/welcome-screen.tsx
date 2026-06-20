@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { BookOpen, ChevronRight, Heart, Shield } from "lucide-react"
+import { ChevronRight, Shield, Heart, BookOpen } from "lucide-react"
 
 interface WelcomeScreenProps {
   onComplete: () => void
@@ -13,39 +13,67 @@ export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
 
   if (step === "disclaimer") {
     return (
-      <div className="flex h-full flex-col bg-background">
-        <div className="flex-1 overflow-y-auto px-6 pb-6 pt-12">
+      <div className="h-full bg-background flex flex-col">
+        <div className="flex-1 overflow-y-auto px-6 pt-12 pb-6">
           <div className="mb-8">
-            <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10">
-              <Shield className="h-5 w-5 text-primary" />
+            <div className="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+              <Shield className="w-5 h-5 text-primary" />
             </div>
-            <h1 className="mb-2 text-2xl font-semibold leading-snug text-foreground">使用前，请先了解</h1>
-            <p className="text-sm leading-relaxed text-muted-foreground">Bipolaris 是一款情绪支持工具，不是医疗产品。</p>
+            <h1 className="text-2xl font-semibold text-foreground leading-snug mb-2 text-pretty">
+              使用前，请先了解
+            </h1>
+            <p className="text-muted-foreground text-sm leading-relaxed">
+              Bipolaris 是一款情绪支持工具，不是医疗产品。
+            </p>
           </div>
 
-          <div className="mb-8 space-y-4">
+          <div className="space-y-4 mb-8">
             {[
-              ["我们不替代医生", "Bipolaris 无法诊断疾病、开具处方或调整用药。所有医疗决策请遵医嘱，并咨询精神科医生或药师。"],
-              ["危机时请拨打热线", "若你出现伤害自己或他人的想法，请立即拨打希望24热线 400-161-9995 或急救电话 120。"],
-              ["数据仍在测试阶段", "当前测试版优先使用匿名 ID 与本地状态记录，正式公开前仍需完善隐私政策和数据删除机制。"],
-              ["产品仍在早期阶段", "AI 存在错误和局限。如有不适或不满意的回复，可以直接通过反馈按钮告诉我们。"],
-            ].map(([title, desc]) => (
-              <div key={title} className="rounded-2xl border border-border bg-card p-4">
-                <h3 className="mb-1 text-sm font-medium text-foreground">{title}</h3>
-                <p className="text-xs leading-relaxed text-muted-foreground">{desc}</p>
+              {
+                title: "我们不替代医生",
+                desc: "Bipolaris 无法诊断疾病、开具处方或调整用药。所有医疗决策请遵医嘱，并咨询您的精神科医生或药师。",
+              },
+              {
+                title: "危机时请拨打热线",
+                desc: "若您出现伤害自己或他人的想法，请立即拨打希望24热线 400-161-9995 或急救电话 120。",
+              },
+              {
+                title: "您的数据受到保护",
+                desc: "我们仅收集必要的匿名化交互数据，敏感信息加密存储，您可随时申请删除。",
+              },
+              {
+                title: "产品仍在早期阶段",
+                desc: "AI 存在错误和局限，请保持批判性判断。如有不适或不满意的回复，可以直接告诉我们。",
+              },
+            ].map((item) => (
+              <div key={item.title} className="bg-card rounded-2xl p-4 border border-border">
+                <h3 className="text-sm font-medium text-foreground mb-1">{item.title}</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
               </div>
             ))}
           </div>
 
-          <button type="button" onClick={() => setAgreed(!agreed)} className="mb-8 flex w-full cursor-pointer items-start gap-3 text-left">
-            <div className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition-colors ${agreed ? "border-primary bg-primary" : "border-border bg-card"}`}>
+          <button
+            type="button"
+            onClick={() => setAgreed(!agreed)}
+            className="flex items-start gap-3 cursor-pointer mb-8 text-left w-full"
+          >
+            <div
+              className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors ${
+                agreed ? "bg-primary border-primary" : "border-border bg-card"
+              }`}
+            >
               {agreed && (
-                <svg className="h-3 w-3 text-primary-foreground" fill="none" viewBox="0 0 12 12">
-                  <path d="M2 6l3 3 5-5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                <svg className="w-3 h-3 text-primary-foreground" fill="none" viewBox="0 0 12 12">
+                  <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               )}
             </div>
-            <span className="text-sm leading-relaxed text-foreground">我已阅读并理解以上内容，同意以测试版方式使用 Bipolaris。</span>
+            <span className="text-sm text-foreground leading-relaxed">
+              我已阅读并理解以上内容，同意
+              <span className="text-primary"> 用户协议 </span>与
+              <span className="text-primary"> 隐私政策</span>
+            </span>
           </button>
         </div>
 
@@ -53,7 +81,11 @@ export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
           <button
             onClick={() => agreed && onComplete()}
             disabled={!agreed}
-            className={`w-full rounded-2xl py-4 text-base font-medium transition-all ${agreed ? "bg-primary text-primary-foreground active:scale-[0.98]" : "cursor-not-allowed bg-muted text-muted-foreground"}`}
+            className={`w-full py-4 rounded-2xl text-base font-medium transition-all ${
+              agreed
+                ? "bg-primary text-primary-foreground active:scale-[0.98]"
+                : "bg-muted text-muted-foreground cursor-not-allowed"
+            }`}
           >
             开始使用 Bipolaris
           </button>
@@ -63,45 +95,78 @@ export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
   }
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      <div className="flex flex-1 flex-col justify-between overflow-y-auto px-6 pb-8 pt-16">
+    <div className="h-full bg-background flex flex-col">
+      <div className="flex-1 flex flex-col justify-between px-6 pt-16 pb-8 overflow-y-auto">
+        {/* 品牌区域 */}
         <div>
           <div className="mb-10">
-            <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-3xl bg-primary shadow-lg shadow-primary/20">
-              <svg fill="none" height="32" viewBox="0 0 32 32" width="32">
-                <path d="M16 4C16 4 8 10 8 18C8 22.4183 11.5817 26 16 26C20.4183 26 24 22.4183 24 18C24 10 16 4 16 4Z" fill="white" fillOpacity="0.9" />
-                <circle cx="16" cy="18" fill="white" fillOpacity="0.5" r="4" />
+            <div className="w-16 h-16 rounded-3xl bg-primary flex items-center justify-center mb-6 shadow-lg shadow-primary/20">
+              <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                <path
+                  d="M16 4C16 4 8 10 8 18C8 22.4183 11.5817 26 16 26C20.4183 26 24 22.4183 24 18C24 10 16 4 16 4Z"
+                  fill="white"
+                  fillOpacity="0.9"
+                />
+                <circle cx="16" cy="18" r="4" fill="white" fillOpacity="0.5" />
               </svg>
             </div>
-            <h1 className="mb-3 text-4xl font-bold tracking-tight text-foreground">Bipolaris</h1>
-            <p className="text-lg leading-relaxed text-muted-foreground">专为双相情感障碍设计的<br />AI 情绪陪伴助手</p>
+            <h1 className="text-4xl font-bold text-foreground tracking-tight mb-3">
+              Bipolaris
+            </h1>
+            <p className="text-lg text-muted-foreground leading-relaxed text-pretty">
+              专为双相情感障碍设计的
+              <br />
+              AI 情绪陪伴助手
+            </p>
           </div>
 
+          {/* 特性卡片 */}
           <div className="space-y-3">
             {[
-              { icon: Heart, title: "状态感知支持", desc: "根据平稳、抑郁、躁狂或混合状态提供更贴近情境的支持。", color: "bg-rose-50 text-rose-500" },
-              { icon: Shield, title: "危机识别与分流", desc: "优先识别高风险信号，引导你获得现实中的专业帮助。", color: "bg-blue-50 text-blue-500" },
-              { icon: BookOpen, title: "复诊状态摘要", desc: "记录每日情绪波动，为后续复诊摘要和趋势分析打基础。", color: "bg-amber-50 text-amber-500" },
+              {
+                icon: Heart,
+                title: "状态感知支持",
+                desc: "根据你的情绪状态——平稳、抑郁、躁狂或混合——提供个性化回复",
+                color: "bg-rose-50 text-rose-500",
+              },
+              {
+                icon: Shield,
+                title: "危机识别与分流",
+                desc: "实时识别高风险信号，在危机时刻引导你获得真实帮助",
+                color: "bg-blue-50 text-blue-500",
+              },
+              {
+                icon: BookOpen,
+                title: "复诊状态摘要",
+                desc: "记录每日情绪波动，在复诊前生成状态报告，节省医患沟通时间",
+                color: "bg-amber-50 text-amber-500",
+              },
             ].map((item) => (
-              <div key={item.title} className="flex items-start gap-4 rounded-2xl border border-border bg-card p-4">
-                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${item.color}`}>
-                  <item.icon className="h-5 w-5" />
+              <div key={item.title} className="flex items-start gap-4 bg-card rounded-2xl p-4 border border-border">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${item.color}`}>
+                  <item.icon className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="mb-0.5 text-sm font-medium text-foreground">{item.title}</h3>
-                  <p className="text-xs leading-relaxed text-muted-foreground">{item.desc}</p>
+                  <h3 className="text-sm font-medium text-foreground mb-0.5">{item.title}</h3>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
                 </div>
               </div>
             ))}
           </div>
         </div>
 
+        {/* 底部按钮 */}
         <div className="mt-8">
-          <button onClick={() => setStep("disclaimer")} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-primary py-4 text-base font-medium text-primary-foreground shadow-lg shadow-primary/20 transition-transform active:scale-[0.98]">
+          <button
+            onClick={() => setStep("disclaimer")}
+            className="w-full py-4 bg-primary text-primary-foreground rounded-2xl text-base font-medium flex items-center justify-center gap-2 active:scale-[0.98] transition-transform shadow-lg shadow-primary/20"
+          >
             了解更多并开始
-            <ChevronRight className="h-5 w-5" />
+            <ChevronRight className="w-5 h-5" />
           </button>
-          <p className="mt-4 text-center text-xs text-muted-foreground">本产品不替代医疗诊断与治疗</p>
+          <p className="text-center text-xs text-muted-foreground mt-4">
+            本产品不替代医疗诊断与治疗
+          </p>
         </div>
       </div>
     </div>
