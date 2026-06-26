@@ -1,18 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { FileText, Lock, TrendingUp, TrendingDown, Minus, ChevronRight, Download, Share2 } from "lucide-react"
+import { getMoodLogs, type MoodLog } from "@/lib/bipolaris-api"
 
-// 模拟过去7天数据
-const mockDays = [
-  { date: "6/12", mood: 2, sleep: 3, energy: 2, state: "depressed" },
-  { date: "6/13", mood: 2, sleep: 2, energy: 2, state: "depressed" },
-  { date: "6/14", mood: 3, sleep: 3, energy: 3, state: "stable" },
-  { date: "6/15", mood: 4, sleep: 4, energy: 4, state: "manic" },
-  { date: "6/16", mood: 5, sleep: 2, energy: 5, state: "manic" },
-  { date: "6/17", mood: 3, sleep: 3, energy: 3, state: "mixed" },
-  { date: "6/18", mood: 3, sleep: 4, energy: 3, state: "stable" },
-]
+type ReportDay = MoodLog & { dateLabel: string }
 
 const stateConfig: Record<string, { label: string; color: string; bar: string }> = {
   stable: { label: "平稳", color: "text-green-700", bar: "bg-green-400" },
@@ -45,21 +37,51 @@ function TrendIcon({ trend }: { trend: "up" | "down" | "stable" }) {
 export function ReportScreen() {
   const [activeTab, setActiveTab] = useState<"week" | "summary">("week")
   const [showPromo, setShowPromo] = useState(false)
+  const [logs, setLogs] = useState<MoodLog[]>([])
 
-  const avgMood = (mockDays.reduce((s, d) => s + d.mood, 0) / mockDays.length).toFixed(1)
-  const avgSleep = (mockDays.reduce((s, d) => s + d.sleep, 0) / mockDays.length).toFixed(1)
-  const stateFreq = mockDays.reduce<Record<string, number>>((acc, d) => {
+  useEffect(() => {
+    setLogs(getMoodLogs())
+  }, [])
+
+  const reportDays = useMemo<ReportDay[]>(() => {
+    return logs
+      .slice(0, 7)
+      .reverse()
+      .map((log) => ({
+        ...log,
+        dateLabel: new Date(log.createdAt).toLocaleDateString("zh-CN", {
+          month: "numeric",
+          day: "numeric",
+        }),
+      }))
+  }, [logs])
+
+  const hasLogs = reportDays.length > 0
+  const avgMood = hasLogs ? (reportDays.reduce((s, d) => s + d.mood, 0) / reportDays.length).toFixed(1) : "-"
+  const avgSleep = hasLogs ? (reportDays.reduce((s, d) => s + d.sleep, 0) / reportDays.length).toFixed(1) : "-"
+  const stateFreq = reportDays.reduce<Record<string, number>>((acc, d) => {
     acc[d.state] = (acc[d.state] || 0) + 1
     return acc
   }, {})
-  const dominantState = Object.entries(stateFreq).sort((a, b) => b[1] - a[1])[0][0]
+  const dominantState = Object.entries(stateFreq).sort((a, b) => b[1] - a[1])[0]?.[0] || "unknown"
+  const latest = logs[0]
+  const missedMedicationCount = reportDays.filter((day) => day.medication === "missed").length
+  const warningDays = reportDays.filter((day) => day.sleep <= 2 || day.impulse >= 4 || day.state === "manic" || day.state === "mixed")
+  const dateRange =
+    reportDays.length > 1
+      ? `${reportDays[0].dateLabel} - ${reportDays[reportDays.length - 1].dateLabel}`
+      : latest
+        ? new Date(latest.createdAt).toLocaleDateString("zh-CN")
+        : "暂无记录"
 
   return (
     <div className="flex flex-col bg-background">
       {/* 顶部 */}
       <div className="px-5 pt-6 pb-4">
         <h1 className="text-2xl font-semibold text-foreground mb-1">状态记录</h1>
-        <p className="text-sm text-muted-foreground">连续记录第 7 天</p>
+        <p className="text-sm text-muted-foreground">
+          {hasLogs ? `已记录 ${logs.length} 次 · 最近 ${reportDays.length} 条用于趋势分析` : "完成一次签到后，这里会生成你的状态趋势"}
+        </p>
       </div>
 
       {/* Tab */}
@@ -84,11 +106,11 @@ export function ReportScreen() {
           {/* 总览卡片 */}
           <div className="grid grid-cols-3 gap-3">
             {[
-              { label: "平均情绪", value: avgMood, max: "5", trend: "stable" as const, color: "bg-rose-100 text-rose-600" },
-              { label: "平均睡眠", value: avgSleep, max: "5", trend: "up" as const, color: "bg-blue-100 text-blue-600" },
+              { label: "平均情绪", value: avgMood, max: hasLogs ? "5" : "", trend: "stable" as const, color: "bg-rose-100 text-rose-600" },
+              { label: "平均睡眠", value: avgSleep, max: hasLogs ? "5" : "", trend: "stable" as const, color: "bg-blue-100 text-blue-600" },
               {
                 label: "主要状态",
-                value: stateConfig[dominantState]?.label || "未知",
+                value: hasLogs ? stateConfig[dominantState]?.label || "未知" : "-",
                 max: "",
                 trend: "stable" as const,
                 color: "bg-amber-100 text-amber-600",
@@ -107,13 +129,14 @@ export function ReportScreen() {
 
           {/* 每日详情 */}
           <div className="bg-card border border-border rounded-2xl p-4">
-            <h3 className="text-sm font-medium text-foreground mb-4">过去 7 天</h3>
-            <div className="space-y-3">
-              {mockDays.map((day) => {
+            <h3 className="text-sm font-medium text-foreground mb-4">最近记录</h3>
+            {hasLogs ? (
+              <div className="space-y-3">
+              {reportDays.map((day) => {
                 const sc = stateConfig[day.state] || stateConfig.unknown
                 return (
-                  <div key={day.date} className="flex items-center gap-3">
-                    <span className="text-xs text-muted-foreground w-10 shrink-0">{day.date}</span>
+                  <div key={day.id} className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-10 shrink-0">{day.dateLabel}</span>
                     <div className="flex-1 grid grid-cols-3 gap-2">
                       <div className="flex flex-col gap-1">
                         <span className="text-xs text-muted-foreground">情绪</span>
@@ -134,13 +157,19 @@ export function ReportScreen() {
                   </div>
                 )
               })}
-            </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                还没有状态记录。完成今日签到后，我会在这里展示你的情绪、睡眠和精力变化。
+              </p>
+            )}
           </div>
 
           {/* 状态分布 */}
           <div className="bg-card border border-border rounded-2xl p-4">
             <h3 className="text-sm font-medium text-foreground mb-3">状态分布</h3>
-            <div className="space-y-2">
+            {hasLogs ? (
+              <div className="space-y-2">
               {Object.entries(stateFreq).sort((a, b) => b[1] - a[1]).map(([state, count]) => {
                 const sc = stateConfig[state] || stateConfig.unknown
                 return (
@@ -149,21 +178,28 @@ export function ReportScreen() {
                     <div className="flex-1 bg-muted rounded-full h-2">
                       <div
                         className={`h-2 rounded-full ${sc.bar}`}
-                        style={{ width: `${(count / mockDays.length) * 100}%` }}
+                        style={{ width: `${(count / reportDays.length) * 100}%` }}
                       />
                     </div>
-                    <span className="text-xs text-muted-foreground w-8 text-right">{count}天</span>
+                    <span className="text-xs text-muted-foreground w-8 text-right">{count}次</span>
                   </div>
                 )
               })}
-            </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">暂无状态分布。</p>
+            )}
           </div>
 
           {/* 观察提示 */}
           <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
-            <p className="text-xs font-medium text-amber-800 mb-1">本周观察</p>
+            <p className="text-xs font-medium text-amber-800 mb-1">近期观察</p>
             <p className="text-xs text-amber-700 leading-relaxed">
-              本周出现了从抑郁相到躁狂相的快速转变（6/12-6/16），睡眠减少伴随精力升高，可能是值得关注的预警信号。建议在复诊时告知医生。
+              {hasLogs
+                ? warningDays.length > 0
+                  ? `最近 ${warningDays.length} 次记录出现睡眠偏低、冲动升高、躁狂相或混合状态等信号，建议复诊时主动告诉医生。`
+                  : "最近记录暂未出现明显高风险波动。继续保持规律记录，有助于更早发现状态变化。"
+                : "完成几次签到后，我会根据真实记录提示可能需要关注的睡眠、冲动或状态波动。"}
             </p>
           </div>
         </div>
@@ -192,7 +228,7 @@ export function ReportScreen() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-foreground">状态摘要报告</p>
-                  <p className="text-xs text-muted-foreground">2026年6月12日 - 6月18日</p>
+                  <p className="text-xs text-muted-foreground">{dateRange}</p>
                 </div>
                 <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded-full">预览</span>
               </div>
@@ -203,13 +239,21 @@ export function ReportScreen() {
               <div>
                 <p className="text-xs font-medium text-foreground mb-1">情绪波动总结</p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  本周用户情绪评分从 2/5（抑郁期）升至 5/5（躁狂期），波动幅度较大。中间出现一天平稳后快速进入精力亢进状态。
+                  {hasLogs
+                    ? `最近 ${reportDays.length} 次记录中，平均情绪为 ${avgMood}/5，主要状态为 ${stateConfig[dominantState]?.label || "未知"}。`
+                    : "暂无足够记录生成情绪波动总结。完成几次签到后，这里会自动整理近期状态。"}
                 </p>
               </div>
               <div>
                 <p className="text-xs font-medium text-foreground mb-1">睡眠变化</p>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  睡眠质量整体偏低（平均 3.1/5），6/15-6/16 出现明显下降（2/5），与精力升高同步出现，提示可能进入轻躁状态。
+                  {hasLogs
+                    ? `最近记录的平均睡眠为 ${avgSleep}/5。${
+                        reportDays.some((day) => day.sleep <= 2 && day.energy >= 4)
+                          ? "其中出现过睡眠减少但精力偏高的组合，建议复诊时重点说明。"
+                          : "暂未看到明显的睡眠减少伴精力升高组合。"
+                      }`
+                    : "暂无睡眠趋势。"}
                 </p>
               </div>
 
@@ -218,14 +262,18 @@ export function ReportScreen() {
                 <div className="blur-sm pointer-events-none select-none">
                   <p className="text-xs font-medium text-foreground mb-1">用药依从性</p>
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    本周用药记录：按时服药 5 天，部分服药 1 天，遗漏 1 天。遗漏发生在 6/16（精力高峰日）。
+                    {hasLogs
+                      ? `最近 ${reportDays.length} 次记录中，漏服 ${missedMedicationCount} 次。${
+                          missedMedicationCount > 0 ? "如不确定是否补服，请联系医生或药师。" : "目前未记录到漏服。"
+                        }`
+                      : "暂无用药记录。"}
                   </p>
                   <div className="mt-3">
                     <p className="text-xs font-medium text-foreground mb-1">复诊建议议题</p>
                     <ul className="text-xs text-muted-foreground space-y-0.5">
-                      <li>· 快速循环迹象评估</li>
-                      <li>· 当前用药方案是否需要调整</li>
-                      <li>· 睡眠干预策略</li>
+                      <li>· 近期主要状态：{hasLogs ? stateConfig[dominantState]?.label || "未知" : "暂无记录"}</li>
+                      <li>· 睡眠和精力是否同步变化</li>
+                      <li>· 用药依从性和不适感记录</li>
                     </ul>
                   </div>
                 </div>
@@ -253,13 +301,14 @@ export function ReportScreen() {
             </div>
             <button
               onClick={() => setShowPromo(true)}
+              disabled={!hasLogs}
               className="w-full py-3.5 bg-primary text-primary-foreground rounded-2xl text-sm font-medium flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
             >
               <FileText className="w-4 h-4" />
-              生成复诊摘要报告
+              {hasLogs ? "生成复诊摘要报告" : "先完成一次签到"}
             </button>
             <p className="text-center text-xs text-muted-foreground mt-2">
-              连续记录 7 天，可享受 5 折优惠
+              {hasLogs ? "连续记录 7 天，可享受 5 折优惠" : "有记录后才能生成摘要"}
             </p>
           </div>
 

@@ -41,7 +41,7 @@ export default function Page() {
         <CheckinScreen
           onComplete={(data) => {
             setCheckinData(data)
-            saveMoodLog(data)
+            if (data.mood > 0) saveMoodLog(data)
             setPhase("main")
           }}
         />
