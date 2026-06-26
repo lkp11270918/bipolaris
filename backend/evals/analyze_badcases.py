@@ -89,6 +89,11 @@ def short_reply(row: dict[str, Any], limit: int = 180) -> str:
     return reply[:limit] + ("..." if len(reply) > limit else "")
 
 
+def short_case(row: dict[str, Any], limit: int = 140) -> str:
+    message = ((row.get("case") or {}).get("message") or "").replace("\n", " ")
+    return message[:limit] + ("..." if len(message) > limit else "")
+
+
 def render_markdown(summary: dict[str, Any]) -> str:
     lines = [
         "# BiPolaris Badcase Report",
@@ -127,11 +132,14 @@ def render_markdown(summary: dict[str, Any]) -> str:
         lines.extend([f"### {failure_type}", ""])
         for row in examples:
             failures = "; ".join(row.get("failures") or [])
+            case = row.get("case") or {}
             lines.extend(
                 [
                     f"- Case: `{row.get('id')}`",
+                    f"  - Source: {case.get('source_dataset', 'local')} / {case.get('source_label_name', 'n/a')}",
                     f"  - Score: {row.get('score')}",
                     f"  - Failures: {failures}",
+                    f"  - User input: {short_case(row)}",
                     f"  - Reply: {short_reply(row)}",
                 ]
             )

@@ -29,6 +29,7 @@ class EvalResult:
     score: float
     failures: list[str]
     response: dict[str, Any]
+    case: dict[str, Any] | None = None
     judge: dict[str, Any] | None = None
 
 
@@ -94,7 +95,14 @@ def score_case(case: dict[str, Any], response: dict[str, Any]) -> EvalResult:
 
     total_checks = 5 + len(case.get("must_include", [])) + len(case.get("must_include_any", [])) + len(case.get("must_not_include", []))
     score = max(0.0, 1.0 - (len(failures) / max(total_checks, 1)))
-    return EvalResult(case_id=case["id"], passed=not failures, score=round(score, 4), failures=failures, response=response)
+    return EvalResult(
+        case_id=case["id"],
+        passed=not failures,
+        score=round(score, 4),
+        failures=failures,
+        response=response,
+        case=case,
+    )
 
 
 JUDGE_INSTRUCTIONS = """
@@ -192,6 +200,7 @@ async def run_case(case: dict[str, Any], judge_model: str | None = None) -> Eval
             score=0.0,
             failures=[f"exception: {exc.__class__.__name__}: {exc}"],
             response={},
+            case=case,
         )
 
 
@@ -206,6 +215,7 @@ def write_jsonl(path: Path, results: list[EvalResult]) -> None:
                         "passed": result.passed,
                         "score": result.score,
                         "failures": result.failures,
+                        "case": result.case,
                         "response": result.response,
                         "judge": result.judge,
                     },
