@@ -1,32 +1,121 @@
 "use client"
 
-import { useState } from "react"
-import { Phone, Plus, Trash2, Bell, Shield, UserCircle, ChevronRight } from "lucide-react"
+import { useEffect, useState } from "react"
+import {
+  Bell,
+  ChevronRight,
+  Database,
+  Download,
+  Phone,
+  Shield,
+  Trash2,
+  UserCircle,
+} from "lucide-react"
+import {
+  deleteMyData,
+  fetchUserSettings,
+  getAnonymousUserId,
+  getMoodLogs,
+  getUserSettings,
+  saveUserSettings,
+  type UserSettings,
+} from "@/lib/bipolaris-api"
 
-interface Contact {
-  id: string
-  name: string
-  phone: string
-  relation: string
+type Modal = "profile" | "contact" | "privacy" | "delete" | null
+
+function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`w-11 h-6 rounded-full relative transition-colors ${
+        checked ? "bg-primary" : "bg-muted"
+      }`}
+      aria-pressed={checked}
+    >
+      <span
+        className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all ${
+          checked ? "left-6" : "left-1"
+        }`}
+      />
+    </button>
+  )
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+  type?: string
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-muted-foreground block mb-1.5">{label}</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        type={type}
+        className="w-full bg-muted border border-border rounded-2xl px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+      />
+    </label>
+  )
 }
 
 export function SettingsScreen() {
-  const [contacts, setContacts] = useState<Contact[]>([
-    { id: "1", name: "妈妈", phone: "138****1234", relation: "家人" },
-  ])
-  const [showAddContact, setShowAddContact] = useState(false)
-  const [newContact, setNewContact] = useState({ name: "", phone: "", relation: "" })
+  const [settings, setSettings] = useState<UserSettings>(() => getUserSettings())
+  const [draft, setDraft] = useState<UserSettings>(() => getUserSettings())
+  const [modal, setModal] = useState<Modal>(null)
+  const [savedHint, setSavedHint] = useState("")
 
-  const addContact = () => {
-    if (newContact.name && newContact.phone) {
-      setContacts((prev) => [
-        ...prev,
-        { id: Date.now().toString(), ...newContact },
-      ])
-      setNewContact({ name: "", phone: "", relation: "" })
-      setShowAddContact(false)
-    }
+  useEffect(() => {
+    void fetchUserSettings()
+      .then((remote) => {
+        setSettings(remote)
+        setDraft(remote)
+      })
+      .catch(() => {})
+  }, [])
+
+  function persist(next: UserSettings, hint = "已保存") {
+    const saved = saveUserSettings(next)
+    setSettings(saved)
+    setDraft(saved)
+    setSavedHint(hint)
+    window.setTimeout(() => setSavedHint(""), 1800)
   }
+
+  function updateSetting<K extends keyof UserSettings>(key: K, value: UserSettings[K]) {
+    persist({ ...settings, [key]: value })
+  }
+
+  async function handleDeleteData() {
+    await deleteMyData().catch(() => {})
+    const reset = getUserSettings()
+    setSettings(reset)
+    setDraft(reset)
+    setModal(null)
+    setSavedHint("本机与云端数据已请求删除")
+  }
+
+  const displayName = settings.displayName || "匿名用户"
+  const contactName = settings.emergencyContactName
+  const contactPhone = settings.emergencyContactPhone
+  const hasContact = Boolean(contactName || contactPhone)
+  const logs = getMoodLogs()
 
   return (
     <div className="flex flex-col bg-background">
@@ -36,194 +125,392 @@ export function SettingsScreen() {
       </div>
 
       <div className="px-5 space-y-5 pb-8">
-        {/* 用户卡片 */}
-        <div className="bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
+        <button
+          onClick={() => {
+            setDraft(settings)
+            setModal("profile")
+          }}
+          className="w-full bg-card border border-border rounded-2xl p-4 flex items-center gap-3 text-left active:scale-[0.99] transition-transform"
+        >
           <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
             <UserCircle className="w-7 h-7 text-primary" />
           </div>
-          <div className="flex-1">
-            <p className="text-sm font-medium text-foreground">匿名用户</p>
-            <p className="text-xs text-muted-foreground">已连续记录 7 天</p>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-foreground truncate">{displayName}</p>
+            <p className="text-xs text-muted-foreground">
+              {settings.ageRange || "未填写年龄段"} · {settings.diagnosisStatus || "未填写状态"}
+            </p>
           </div>
           <ChevronRight className="w-4 h-4 text-muted-foreground" />
-        </div>
+        </button>
 
-        {/* 紧急联系人 */}
-        <div>
+        {savedHint && (
+          <div className="bg-accent/50 text-accent-foreground rounded-2xl px-4 py-3 text-xs">
+            {savedHint}
+          </div>
+        )}
+
+        <section>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-foreground">紧急联系人</h2>
             <button
-              onClick={() => setShowAddContact(true)}
+              onClick={() => {
+                setDraft(settings)
+                setModal("contact")
+              }}
               className="flex items-center gap-1 text-xs text-primary font-medium"
             >
-              <Plus className="w-4 h-4" />
-              添加
+              {hasContact ? "编辑" : "添加"}
             </button>
           </div>
           <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
-            在危机场景下，Bipolaris 会提醒你联系以下人员。我们不会自动发送消息，联系权由你控制。
+            你可以选择添加紧急联系人。只有在系统识别到高风险情况，且你允许提醒时，Bipolaris 才会提示你联系该联系人。
           </p>
-          <div className="space-y-2">
-            {contacts.map((c) => (
-              <div key={c.id} className="bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full bg-rose-50 flex items-center justify-center">
-                  <Phone className="w-4 h-4 text-rose-500" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">{c.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {c.relation} · {c.phone}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setContacts((prev) => prev.filter((x) => x.id !== c.id))}
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-muted-foreground"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
-            {contacts.length === 0 && (
-              <div className="bg-muted/50 rounded-2xl p-4 text-center">
-                <p className="text-xs text-muted-foreground">暂无紧急联系人</p>
-              </div>
+          <div className="bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-rose-50 flex items-center justify-center">
+              <Phone className="w-4 h-4 text-rose-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                {hasContact ? contactName || "未填写姓名" : "暂未添加"}
+              </p>
+              <p className="text-xs text-muted-foreground truncate">
+                {hasContact
+                  ? `${settings.emergencyContactRelation || "紧急联系人"} · ${contactPhone || "未填写电话"}`
+                  : "Bipolaris 不会在普通对话中自动发送聊天内容"}
+              </p>
+            </div>
+            {hasContact && (
+              <button
+                onClick={() =>
+                  persist({
+                    ...settings,
+                    emergencyContactName: "",
+                    emergencyContactPhone: "",
+                    emergencyContactRelation: "",
+                  }, "已移除紧急联系人")
+                }
+                className="w-8 h-8 rounded-full flex items-center justify-center text-muted-foreground"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
             )}
           </div>
-        </div>
-
-        {/* 常用热线 */}
-        <div>
-          <h2 className="text-sm font-semibold text-foreground mb-3">危机资源</h2>
-          <div className="space-y-2">
-            {[
-              { name: "希望24热线", number: "400-161-9995", desc: "24小时心理援助热线" },
-              { name: "北京心理危机研究与干预中心", number: "010-82951332", desc: "北京地区危机干预" },
-              { name: "急救电话", number: "120", desc: "生命危险时立即拨打" },
-            ].map((item) => (
-              <a
-                key={item.number}
-                href={`tel:${item.number.replace(/-/g, "")}`}
-                className="bg-card border border-border rounded-2xl p-4 flex items-center gap-3 block active:scale-[0.99] transition-transform"
-              >
-                <div className="w-9 h-9 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
-                  <Phone className="w-4 h-4 text-destructive" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">{item.name}</p>
-                  <p className="text-xs text-muted-foreground">{item.desc}</p>
-                </div>
-                <p className="text-sm font-medium text-primary">{item.number}</p>
-              </a>
-            ))}
+          <div className="mt-2 bg-card border border-border rounded-2xl px-4 py-3 flex items-center justify-between">
+            <div>
+              <p className="text-sm text-foreground">高风险时提示联系紧急联系人</p>
+              <p className="text-xs text-muted-foreground">不会自动向联系人发送对话内容</p>
+            </div>
+            <Toggle
+              checked={settings.allowEmergencyContactPrompt}
+              onChange={(checked) => updateSetting("allowEmergencyContactPrompt", checked)}
+            />
           </div>
-        </div>
+        </section>
 
-        {/* 通知设置 */}
-        <div>
+        <section>
           <h2 className="text-sm font-semibold text-foreground mb-3">提醒设置</h2>
           <div className="bg-card border border-border rounded-2xl divide-y divide-border">
-            {[
-              { label: "每日签到提醒", sub: "每天 08:30", enabled: true },
-              { label: "用药提醒", sub: "按照设定时间", enabled: false },
-              { label: "复诊前摘要提醒", sub: "复诊前 2 天", enabled: true },
-            ].map((item) => (
-              <div key={item.label} className="flex items-center justify-between px-4 py-3.5">
-                <div className="flex items-center gap-3">
-                  <Bell className="w-4 h-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm text-foreground">{item.label}</p>
-                    <p className="text-xs text-muted-foreground">{item.sub}</p>
-                  </div>
-                </div>
-                <div
-                  className={`w-11 h-6 rounded-full relative transition-colors ${
-                    item.enabled ? "bg-primary" : "bg-muted"
-                  }`}
-                >
-                  <div
-                    className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all ${
-                      item.enabled ? "left-6" : "left-1"
-                    }`}
+            <div className="flex items-center justify-between px-4 py-3.5 gap-3">
+              <div className="flex items-center gap-3">
+                <Bell className="w-4 h-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm text-foreground">每日签到提醒</p>
+                  <input
+                    type="time"
+                    value={settings.dailyCheckinTime}
+                    onChange={(e) => updateSetting("dailyCheckinTime", e.target.value)}
+                    className="text-xs text-muted-foreground bg-transparent focus:outline-none"
                   />
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 隐私 */}
-        <div>
-          <h2 className="text-sm font-semibold text-foreground mb-3">隐私与数据</h2>
-          <div className="bg-card border border-border rounded-2xl divide-y divide-border">
-            {[
-              { icon: Shield, label: "数据加密说明", sub: "查看我们如何保护你的数据" },
-              { icon: Shield, label: "删除我的数据", sub: "永久删除所有记录" },
-            ].map((item) => (
-              <div key={item.label} className="flex items-center justify-between px-4 py-3.5">
-                <div className="flex items-center gap-3">
-                  <item.icon className="w-4 h-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm text-foreground">{item.label}</p>
-                    <p className="text-xs text-muted-foreground">{item.sub}</p>
-                  </div>
+              <Toggle
+                checked={settings.dailyCheckinEnabled}
+                onChange={(checked) => updateSetting("dailyCheckinEnabled", checked)}
+              />
+            </div>
+            <div className="flex items-center justify-between px-4 py-3.5 gap-3">
+              <div className="flex items-center gap-3">
+                <Bell className="w-4 h-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm text-foreground">用药提醒</p>
+                  <input
+                    type="time"
+                    value={settings.medicationTime}
+                    onChange={(e) => updateSetting("medicationTime", e.target.value)}
+                    className="text-xs text-muted-foreground bg-transparent focus:outline-none"
+                  />
                 </div>
-                <ChevronRight className="w-4 h-4 text-muted-foreground" />
               </div>
-            ))}
+              <Toggle
+                checked={settings.medicationEnabled}
+                onChange={(checked) => updateSetting("medicationEnabled", checked)}
+              />
+            </div>
+            <div className="flex items-center justify-between px-4 py-3.5">
+              <div className="flex items-center gap-3">
+                <Bell className="w-4 h-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm text-foreground">复诊前摘要提醒</p>
+                  <p className="text-xs text-muted-foreground">复诊前 2 天</p>
+                </div>
+              </div>
+              <Toggle
+                checked={settings.appointmentEnabled}
+                onChange={(checked) => updateSetting("appointmentEnabled", checked)}
+              />
+            </div>
           </div>
-        </div>
+        </section>
+
+        <section>
+          <h2 className="text-sm font-semibold text-foreground mb-3">数据与隐私</h2>
+          <div className="bg-card border border-border rounded-2xl divide-y divide-border">
+            <div className="flex items-center justify-between px-4 py-3.5">
+              <div className="flex items-center gap-3">
+                <Database className="w-4 h-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm text-foreground">长期记忆</p>
+                  <p className="text-xs text-muted-foreground">
+                    {settings.longTermMemoryEnabled ? "开启长期记忆" : "关闭长期记忆"}
+                  </p>
+                </div>
+              </div>
+              <Toggle
+                checked={settings.longTermMemoryEnabled}
+                onChange={(checked) => updateSetting("longTermMemoryEnabled", checked)}
+              />
+            </div>
+            <button
+              onClick={() => setModal("privacy")}
+              className="w-full flex items-center justify-between px-4 py-3.5 text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Shield className="w-4 h-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm text-foreground">数据加密说明</p>
+                  <p className="text-xs text-muted-foreground">查看、导出或删除自己的记录</p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-muted-foreground" />
+            </button>
+            <button
+              onClick={() => {
+                const report = JSON.stringify({ settings, moodLogs: logs }, null, 2)
+                const blob = new Blob([report], { type: "application/json" })
+                const url = URL.createObjectURL(blob)
+                const link = document.createElement("a")
+                link.href = url
+                link.download = "bipolaris-data.json"
+                link.click()
+                URL.revokeObjectURL(url)
+              }}
+              className="w-full flex items-center justify-between px-4 py-3.5 text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Download className="w-4 h-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm text-foreground">导出我的数据</p>
+                  <p className="text-xs text-muted-foreground">{logs.length} 条状态记录</p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-muted-foreground" />
+            </button>
+            <button
+              onClick={() => setModal("delete")}
+              className="w-full flex items-center justify-between px-4 py-3.5 text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Trash2 className="w-4 h-4 text-destructive" />
+                <div>
+                  <p className="text-sm text-destructive">删除我的数据</p>
+                  <p className="text-xs text-muted-foreground">永久删除相关记录</p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-muted-foreground" />
+            </button>
+          </div>
+        </section>
+
+        <section className="bg-card border border-border rounded-2xl p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-2">简短版隐私承诺</h2>
+          <ul className="space-y-1.5 text-xs text-muted-foreground leading-relaxed">
+            <li>不公开你的聊天内容</li>
+            <li>不将心理健康数据用于广告推荐</li>
+            <li>不在未经授权的情况下分享你的完整对话</li>
+            <li>支持你查看、导出和删除自己的数据</li>
+            <li>在高风险场景下优先保护你的安全</li>
+          </ul>
+        </section>
 
         <p className="text-center text-xs text-muted-foreground">
-          Bipolaris v0.1 · 演示原型
+          Bipolaris v0.1 · {getAnonymousUserId().slice(0, 13)}
           <br />
           本产品不替代专业医疗诊断与治疗
         </p>
       </div>
 
-      {/* 添加联系人 Modal */}
-      {showAddContact && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-end z-50"
-          onClick={() => setShowAddContact(false)}
-        >
+      {modal && (
+        <div className="fixed inset-0 bg-black/50 flex items-end z-50" onClick={() => setModal(null)}>
           <div
-            className="w-full bg-card rounded-t-3xl p-6"
+            className="w-full max-h-[88dvh] overflow-y-auto bg-card rounded-t-3xl p-6"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="w-10 h-1 bg-border rounded-full mx-auto mb-6" />
-            <h3 className="text-lg font-semibold text-foreground mb-4">添加紧急联系人</h3>
-            <div className="space-y-3 mb-6">
-              <input
-                value={newContact.name}
-                onChange={(e) => setNewContact((p) => ({ ...p, name: e.target.value }))}
-                placeholder="姓名"
-                className="w-full bg-muted border border-border rounded-2xl px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
-              />
-              <input
-                value={newContact.phone}
-                onChange={(e) => setNewContact((p) => ({ ...p, phone: e.target.value }))}
-                placeholder="手机号码"
-                type="tel"
-                className="w-full bg-muted border border-border rounded-2xl px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
-              />
-              <input
-                value={newContact.relation}
-                onChange={(e) => setNewContact((p) => ({ ...p, relation: e.target.value }))}
-                placeholder="关系（如：家人、朋友、医生）"
-                className="w-full bg-muted border border-border rounded-2xl px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
-              />
-            </div>
-            <button
-              onClick={addContact}
-              disabled={!newContact.name || !newContact.phone}
-              className={`w-full py-4 rounded-2xl text-base font-medium transition-all active:scale-[0.98] ${
-                newContact.name && newContact.phone
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground"
-              }`}
-            >
-              添加联系人
-            </button>
+
+            {modal === "profile" && (
+              <>
+                <h3 className="text-lg font-semibold text-foreground mb-4">个人信息</h3>
+                <div className="space-y-3 mb-6">
+                  <Field
+                    label="显示昵称"
+                    value={draft.displayName}
+                    onChange={(value) => setDraft((p) => ({ ...p, displayName: value }))}
+                    placeholder="例如：小北"
+                  />
+                  <Field
+                    label="年龄段"
+                    value={draft.ageRange}
+                    onChange={(value) => setDraft((p) => ({ ...p, ageRange: value }))}
+                    placeholder="例如：18-24 / 25-34"
+                  />
+                  <Field
+                    label="当前诊疗状态"
+                    value={draft.diagnosisStatus}
+                    onChange={(value) => setDraft((p) => ({ ...p, diagnosisStatus: value }))}
+                    placeholder="例如：已确诊双相II型 / 正在评估"
+                  />
+                </div>
+                <button
+                  onClick={() => {
+                    persist(draft, "个人信息已保存")
+                    setModal(null)
+                  }}
+                  className="w-full py-4 rounded-2xl text-base font-medium bg-primary text-primary-foreground active:scale-[0.98]"
+                >
+                  保存个人信息
+                </button>
+              </>
+            )}
+
+            {modal === "contact" && (
+              <>
+                <h3 className="text-lg font-semibold text-foreground mb-2">紧急联系人授权</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed mb-4">
+                  你可以选择添加紧急联系人。只有在系统识别到高风险情况，且你允许提醒时，Bipolaris 才会提示你联系该联系人。Bipolaris 不会在普通对话中自动向紧急联系人发送你的聊天内容。
+                </p>
+                <div className="space-y-3 mb-6">
+                  <Field
+                    label="姓名"
+                    value={draft.emergencyContactName}
+                    onChange={(value) => setDraft((p) => ({ ...p, emergencyContactName: value }))}
+                    placeholder="联系人姓名"
+                  />
+                  <Field
+                    label="手机号码"
+                    value={draft.emergencyContactPhone}
+                    onChange={(value) => setDraft((p) => ({ ...p, emergencyContactPhone: value }))}
+                    placeholder="联系人电话"
+                    type="tel"
+                  />
+                  <Field
+                    label="关系"
+                    value={draft.emergencyContactRelation}
+                    onChange={(value) => setDraft((p) => ({ ...p, emergencyContactRelation: value }))}
+                    placeholder="如：家人、朋友、医生"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setModal(null)}
+                    className="flex-1 py-4 rounded-2xl text-base font-medium bg-muted text-muted-foreground"
+                  >
+                    暂不添加
+                  </button>
+                  <button
+                    onClick={() => {
+                      persist(draft, "紧急联系人已保存")
+                      setModal(null)
+                    }}
+                    disabled={!draft.emergencyContactName && !draft.emergencyContactPhone}
+                    className={`flex-1 py-4 rounded-2xl text-base font-medium active:scale-[0.98] ${
+                      draft.emergencyContactName || draft.emergencyContactPhone
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    添加紧急联系人
+                  </button>
+                </div>
+              </>
+            )}
+
+            {modal === "privacy" && (
+              <>
+                <h3 className="text-lg font-semibold text-foreground mb-4">数据与隐私说明</h3>
+                <div className="space-y-4 text-sm text-foreground leading-relaxed">
+                  <div>
+                    <h4 className="font-medium mb-1">数据加密保护</h4>
+                    <p className="text-xs text-muted-foreground">
+                      BiPolaris 会对你的敏感信息进行加密保护，包括对话内容、情绪状态记录、睡眠与精力记录、风险识别结果和紧急联系人信息。这些信息在传输和存储过程中都会进行加密处理，降低泄露和未经授权访问的风险。
+                    </p>
+                  </div>
+                  <div>
+                    <h4 className="font-medium mb-1">最小化收集</h4>
+                    <p className="text-xs text-muted-foreground">
+                      我们只收集提供陪伴、状态记录、风险识别和安全提醒所必要的信息。与你无关的身份信息不会被主动收集。
+                    </p>
+                  </div>
+                  <div>
+                    <h4 className="font-medium mb-1">身份与内容分离</h4>
+                    <p className="text-xs text-muted-foreground">
+                      为了降低隐私风险，你的账户信息和心理健康内容会尽量分离存储。即使系统需要分析你的状态，也会优先使用匿名化或去标识化方式。
+                    </p>
+                  </div>
+                  <div>
+                    <h4 className="font-medium mb-1">你可以控制自己的数据</h4>
+                    <p className="text-xs text-muted-foreground">
+                      你可以查看历史记录、删除对话内容、关闭长期记忆、导出状态报告、取消紧急联系人授权。
+                    </p>
+                  </div>
+                  <div>
+                    <h4 className="font-medium mb-1">高风险场景说明</h4>
+                    <p className="text-xs text-muted-foreground">
+                      如果系统识别到你可能处于自伤、自杀或其他紧急风险中，BiPolaris 会优先提供危机资源和求助建议。除非你主动授权，系统不会把完整对话内容分享给他人。
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setModal(null)}
+                  className="w-full mt-6 py-4 rounded-2xl text-base font-medium bg-primary text-primary-foreground"
+                >
+                  我知道了，继续使用
+                </button>
+              </>
+            )}
+
+            {modal === "delete" && (
+              <>
+                <h3 className="text-lg font-semibold text-foreground mb-3">删除我的数据</h3>
+                <p className="text-sm text-muted-foreground leading-relaxed mb-6">
+                  删除后，你的相关对话记录、状态记录和个性化记忆将被清除。删除操作可能无法恢复。
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setModal(null)}
+                    className="flex-1 py-4 rounded-2xl text-base font-medium bg-muted text-muted-foreground"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => void handleDeleteData()}
+                    className="flex-1 py-4 rounded-2xl text-base font-medium bg-destructive text-white active:scale-[0.98]"
+                  >
+                    确认删除
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

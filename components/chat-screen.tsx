@@ -313,7 +313,9 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
             <Send className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-center text-xs text-muted-foreground mt-2">
+        <p className="text-center text-[11px] text-muted-foreground mt-2 leading-relaxed">
+          你的对话会被加密保护，仅用于提供本次支持体验。
+          <br />
           AI 不替代医疗 · 危机请拨 120 或 400-161-9995
         </p>
       </div>

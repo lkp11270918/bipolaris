@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
-from .persistence import list_mood_logs, save_mood_log
+from .persistence import delete_user_data, get_user_settings, list_mood_logs, save_mood_log, save_user_settings
 from .retriever import LocalRetriever
 from .settings import (
     FEEDBACK_PATH,
@@ -122,6 +122,32 @@ class MoodLogRequest(BaseModel):
 
 class MoodLogResponse(MoodLogRequest):
     pass
+
+
+class UserSettingsRequest(BaseModel):
+    user_id: str = Field(min_length=3, max_length=120)
+    display_name: str = Field(default="", max_length=80)
+    age_range: str = Field(default="", max_length=40)
+    diagnosis_status: str = Field(default="", max_length=80)
+    emergency_contact_name: str = Field(default="", max_length=80)
+    emergency_contact_phone: str = Field(default="", max_length=40)
+    emergency_contact_relation: str = Field(default="", max_length=60)
+    allow_emergency_contact_prompt: bool = True
+    daily_checkin_enabled: bool = True
+    daily_checkin_time: str = "08:30"
+    medication_enabled: bool = False
+    medication_time: str = "21:00"
+    appointment_enabled: bool = True
+    long_term_memory_enabled: bool = True
+    updated_at: str = ""
+
+
+class UserSettingsResponse(UserSettingsRequest):
+    pass
+
+
+class DeleteUserDataRequest(BaseModel):
+    user_id: str = Field(min_length=3, max_length=120)
 
 
 app = FastAPI(title="BiPolaris Backend", version="0.1.0")
@@ -397,6 +423,46 @@ def get_mood_logs(
     limit: int = Query(default=30, ge=1, le=90),
 ) -> list[MoodLogResponse]:
     return [MoodLogResponse(**row) for row in list_mood_logs(user_id=user_id, limit=limit)]
+
+
+def default_user_settings(user_id: str) -> dict[str, Any]:
+    return {
+        "user_id": user_id,
+        "display_name": "",
+        "age_range": "",
+        "diagnosis_status": "",
+        "emergency_contact_name": "",
+        "emergency_contact_phone": "",
+        "emergency_contact_relation": "",
+        "allow_emergency_contact_prompt": True,
+        "daily_checkin_enabled": True,
+        "daily_checkin_time": "08:30",
+        "medication_enabled": False,
+        "medication_time": "21:00",
+        "appointment_enabled": True,
+        "long_term_memory_enabled": True,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+@app.get("/user-settings", response_model=UserSettingsResponse)
+def read_user_settings(user_id: str = Query(min_length=3, max_length=120)) -> UserSettingsResponse:
+    row = get_user_settings(user_id) or default_user_settings(user_id)
+    return UserSettingsResponse(**row)
+
+
+@app.post("/user-settings", response_model=UserSettingsResponse)
+def upsert_user_settings(req: UserSettingsRequest) -> UserSettingsResponse:
+    data = req.model_dump()
+    data["updated_at"] = data["updated_at"] or datetime.now().isoformat(timespec="seconds")
+    saved = save_user_settings(data)
+    return UserSettingsResponse(**saved)
+
+
+@app.post("/delete-user-data")
+def remove_user_data(req: DeleteUserDataRequest) -> dict[str, str]:
+    delete_user_data(req.user_id)
+    return {"status": "deleted"}
 
 
 @app.post("/chat", response_model=ChatResponse)

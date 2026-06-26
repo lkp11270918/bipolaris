@@ -7,6 +7,7 @@ const API_BASE_URL =
 
 const ANON_ID_KEY = "bipolaris_anonymous_user_id"
 const MOOD_LOG_KEY = "bipolaris_mood_logs"
+const USER_SETTINGS_KEY = "bipolaris_user_settings"
 
 export type BackendRisk = "low" | "medium" | "crisis"
 
@@ -28,6 +29,24 @@ export interface MoodLog extends CheckinData {
   createdAt: string
 }
 
+export interface UserSettings {
+  userId: string
+  displayName: string
+  ageRange: string
+  diagnosisStatus: string
+  emergencyContactName: string
+  emergencyContactPhone: string
+  emergencyContactRelation: string
+  allowEmergencyContactPrompt: boolean
+  dailyCheckinEnabled: boolean
+  dailyCheckinTime: string
+  medicationEnabled: boolean
+  medicationTime: string
+  appointmentEnabled: boolean
+  longTermMemoryEnabled: boolean
+  updatedAt: string
+}
+
 interface BackendMoodLog {
   id: string
   user_id: string
@@ -41,6 +60,24 @@ interface BackendMoodLog {
   notes: string
 }
 
+interface BackendUserSettings {
+  user_id: string
+  display_name: string
+  age_range: string
+  diagnosis_status: string
+  emergency_contact_name: string
+  emergency_contact_phone: string
+  emergency_contact_relation: string
+  allow_emergency_contact_prompt: boolean
+  daily_checkin_enabled: boolean
+  daily_checkin_time: string
+  medication_enabled: boolean
+  medication_time: string
+  appointment_enabled: boolean
+  long_term_memory_enabled: boolean
+  updated_at: string
+}
+
 export function getAnonymousUserId(): string {
   if (typeof window === "undefined") return "server"
   const existing = window.localStorage.getItem(ANON_ID_KEY)
@@ -51,6 +88,8 @@ export function getAnonymousUserId(): string {
 }
 
 export function checkinToBackendState(checkin: CheckinData) {
+  const settings = getUserSettings()
+  const hasContact = Boolean(settings.emergencyContactName || settings.emergencyContactPhone)
   return {
     mood_state: checkin.state === "unknown" ? "stable" : checkin.state,
     sleep: checkin.sleep * 2,
@@ -66,7 +105,13 @@ export function checkinToBackendState(checkin: CheckinData) {
             : [],
     completed_routines: [],
     warning_signs: warningSignsFromCheckin(checkin),
-    emergency_contact: null,
+    emergency_contact:
+      hasContact && settings.allowEmergencyContactPrompt
+        ? {
+            name: settings.emergencyContactName || null,
+            phone: settings.emergencyContactPhone || null,
+          }
+        : null,
   }
 }
 
@@ -141,6 +186,67 @@ export function getMoodLogs(): MoodLog[] {
   }
 }
 
+export function getUserSettings(): UserSettings {
+  const defaults: UserSettings = {
+    userId: getAnonymousUserId(),
+    displayName: "",
+    ageRange: "",
+    diagnosisStatus: "",
+    emergencyContactName: "",
+    emergencyContactPhone: "",
+    emergencyContactRelation: "",
+    allowEmergencyContactPrompt: true,
+    dailyCheckinEnabled: true,
+    dailyCheckinTime: "08:30",
+    medicationEnabled: false,
+    medicationTime: "21:00",
+    appointmentEnabled: true,
+    longTermMemoryEnabled: true,
+    updatedAt: new Date().toISOString(),
+  }
+  if (typeof window === "undefined") return defaults
+  try {
+    return { ...defaults, ...JSON.parse(window.localStorage.getItem(USER_SETTINGS_KEY) || "{}") }
+  } catch {
+    return defaults
+  }
+}
+
+export function saveUserSettings(settings: UserSettings): UserSettings {
+  const next = { ...settings, userId: getAnonymousUserId(), updatedAt: new Date().toISOString() }
+  window.localStorage.setItem(USER_SETTINGS_KEY, JSON.stringify(next))
+  void syncUserSettings(next).catch(() => {})
+  return next
+}
+
+export async function fetchUserSettings(): Promise<UserSettings> {
+  const userId = getAnonymousUserId()
+  const params = new URLSearchParams({ user_id: userId })
+  const response = await fetch(`${API_BASE_URL}/user-settings?${params.toString()}`)
+  if (!response.ok) throw new Error(`Backend returned ${response.status}`)
+  const settings = fromBackendUserSettings((await response.json()) as BackendUserSettings)
+  window.localStorage.setItem(USER_SETTINGS_KEY, JSON.stringify(settings))
+  return settings
+}
+
+export async function syncUserSettings(settings: UserSettings): Promise<void> {
+  await fetch(`${API_BASE_URL}/user-settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(toBackendUserSettings(settings)),
+  })
+}
+
+export async function deleteMyData(): Promise<void> {
+  await fetch(`${API_BASE_URL}/delete-user-data`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: getAnonymousUserId() }),
+  })
+  window.localStorage.removeItem(MOOD_LOG_KEY)
+  window.localStorage.removeItem(USER_SETTINGS_KEY)
+}
+
 export async function syncMoodLog(log: MoodLog): Promise<void> {
   await fetch(`${API_BASE_URL}/mood-logs`, {
     method: "POST",
@@ -198,4 +304,44 @@ function mergeMoodLogs(...groups: MoodLog[][]): MoodLog[] {
   return Array.from(byId.values()).sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   )
+}
+
+function toBackendUserSettings(settings: UserSettings): BackendUserSettings {
+  return {
+    user_id: getAnonymousUserId(),
+    display_name: settings.displayName,
+    age_range: settings.ageRange,
+    diagnosis_status: settings.diagnosisStatus,
+    emergency_contact_name: settings.emergencyContactName,
+    emergency_contact_phone: settings.emergencyContactPhone,
+    emergency_contact_relation: settings.emergencyContactRelation,
+    allow_emergency_contact_prompt: settings.allowEmergencyContactPrompt,
+    daily_checkin_enabled: settings.dailyCheckinEnabled,
+    daily_checkin_time: settings.dailyCheckinTime,
+    medication_enabled: settings.medicationEnabled,
+    medication_time: settings.medicationTime,
+    appointment_enabled: settings.appointmentEnabled,
+    long_term_memory_enabled: settings.longTermMemoryEnabled,
+    updated_at: settings.updatedAt,
+  }
+}
+
+function fromBackendUserSettings(row: BackendUserSettings): UserSettings {
+  return {
+    userId: row.user_id,
+    displayName: row.display_name || "",
+    ageRange: row.age_range || "",
+    diagnosisStatus: row.diagnosis_status || "",
+    emergencyContactName: row.emergency_contact_name || "",
+    emergencyContactPhone: row.emergency_contact_phone || "",
+    emergencyContactRelation: row.emergency_contact_relation || "",
+    allowEmergencyContactPrompt: Boolean(row.allow_emergency_contact_prompt),
+    dailyCheckinEnabled: Boolean(row.daily_checkin_enabled),
+    dailyCheckinTime: row.daily_checkin_time || "08:30",
+    medicationEnabled: Boolean(row.medication_enabled),
+    medicationTime: row.medication_time || "21:00",
+    appointmentEnabled: Boolean(row.appointment_enabled),
+    longTermMemoryEnabled: Boolean(row.long_term_memory_enabled),
+    updatedAt: row.updated_at || new Date().toISOString(),
+  }
 }

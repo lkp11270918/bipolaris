@@ -27,6 +27,24 @@ MOOD_LOG_COLUMNS = [
     "notes",
 ]
 
+USER_SETTINGS_COLUMNS = [
+    "user_id",
+    "display_name",
+    "age_range",
+    "diagnosis_status",
+    "emergency_contact_name",
+    "emergency_contact_phone",
+    "emergency_contact_relation",
+    "allow_emergency_contact_prompt",
+    "daily_checkin_enabled",
+    "daily_checkin_time",
+    "medication_enabled",
+    "medication_time",
+    "appointment_enabled",
+    "long_term_memory_enabled",
+    "updated_at",
+]
+
 
 def use_postgres() -> bool:
     return DATABASE_URL.startswith(("postgres://", "postgresql://")) and psycopg is not None
@@ -64,6 +82,27 @@ def ensure_app_schema() -> None:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_mood_logs_user_id ON mood_logs(user_id)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    age_range TEXT NOT NULL DEFAULT '',
+                    diagnosis_status TEXT NOT NULL DEFAULT '',
+                    emergency_contact_name TEXT NOT NULL DEFAULT '',
+                    emergency_contact_phone TEXT NOT NULL DEFAULT '',
+                    emergency_contact_relation TEXT NOT NULL DEFAULT '',
+                    allow_emergency_contact_prompt BOOLEAN NOT NULL DEFAULT TRUE,
+                    daily_checkin_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    daily_checkin_time TEXT NOT NULL DEFAULT '08:30',
+                    medication_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    medication_time TEXT NOT NULL DEFAULT '21:00',
+                    appointment_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    long_term_memory_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
         return
 
     with sqlite_connection() as conn:
@@ -84,6 +123,27 @@ def ensure_app_schema() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mood_logs_user_id ON mood_logs(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL DEFAULT '',
+                age_range TEXT NOT NULL DEFAULT '',
+                diagnosis_status TEXT NOT NULL DEFAULT '',
+                emergency_contact_name TEXT NOT NULL DEFAULT '',
+                emergency_contact_phone TEXT NOT NULL DEFAULT '',
+                emergency_contact_relation TEXT NOT NULL DEFAULT '',
+                allow_emergency_contact_prompt INTEGER NOT NULL DEFAULT 1,
+                daily_checkin_enabled INTEGER NOT NULL DEFAULT 1,
+                daily_checkin_time TEXT NOT NULL DEFAULT '08:30',
+                medication_enabled INTEGER NOT NULL DEFAULT 0,
+                medication_time TEXT NOT NULL DEFAULT '21:00',
+                appointment_enabled INTEGER NOT NULL DEFAULT 1,
+                long_term_memory_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
 
 def save_mood_log(row: dict[str, Any]) -> dict[str, Any]:
@@ -166,3 +226,106 @@ def list_mood_logs(user_id: str, limit: int = 30) -> list[dict[str, Any]]:
             (user_id, limit),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def save_user_settings(row: dict[str, Any]) -> dict[str, Any]:
+    ensure_app_schema()
+    values = {key: row.get(key) for key in USER_SETTINGS_COLUMNS}
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            conn.execute(
+                """
+                INSERT INTO user_settings (
+                    user_id, display_name, age_range, diagnosis_status,
+                    emergency_contact_name, emergency_contact_phone, emergency_contact_relation,
+                    allow_emergency_contact_prompt, daily_checkin_enabled, daily_checkin_time,
+                    medication_enabled, medication_time, appointment_enabled, long_term_memory_enabled, updated_at
+                ) VALUES (
+                    %(user_id)s, %(display_name)s, %(age_range)s, %(diagnosis_status)s,
+                    %(emergency_contact_name)s, %(emergency_contact_phone)s, %(emergency_contact_relation)s,
+                    %(allow_emergency_contact_prompt)s, %(daily_checkin_enabled)s, %(daily_checkin_time)s,
+                    %(medication_enabled)s, %(medication_time)s, %(appointment_enabled)s, %(long_term_memory_enabled)s,
+                    %(updated_at)s
+                )
+                ON CONFLICT (user_id) DO UPDATE SET
+                    display_name = EXCLUDED.display_name,
+                    age_range = EXCLUDED.age_range,
+                    diagnosis_status = EXCLUDED.diagnosis_status,
+                    emergency_contact_name = EXCLUDED.emergency_contact_name,
+                    emergency_contact_phone = EXCLUDED.emergency_contact_phone,
+                    emergency_contact_relation = EXCLUDED.emergency_contact_relation,
+                    allow_emergency_contact_prompt = EXCLUDED.allow_emergency_contact_prompt,
+                    daily_checkin_enabled = EXCLUDED.daily_checkin_enabled,
+                    daily_checkin_time = EXCLUDED.daily_checkin_time,
+                    medication_enabled = EXCLUDED.medication_enabled,
+                    medication_time = EXCLUDED.medication_time,
+                    appointment_enabled = EXCLUDED.appointment_enabled,
+                    long_term_memory_enabled = EXCLUDED.long_term_memory_enabled,
+                    updated_at = EXCLUDED.updated_at
+                """
+                ,
+                values,
+            )
+        return values
+
+    with sqlite_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_settings (
+                user_id, display_name, age_range, diagnosis_status,
+                emergency_contact_name, emergency_contact_phone, emergency_contact_relation,
+                allow_emergency_contact_prompt, daily_checkin_enabled, daily_checkin_time,
+                medication_enabled, medication_time, appointment_enabled, long_term_memory_enabled, updated_at
+            ) VALUES (
+                :user_id, :display_name, :age_range, :diagnosis_status,
+                :emergency_contact_name, :emergency_contact_phone, :emergency_contact_relation,
+                :allow_emergency_contact_prompt, :daily_checkin_enabled, :daily_checkin_time,
+                :medication_enabled, :medication_time, :appointment_enabled, :long_term_memory_enabled, :updated_at
+            )
+            ON CONFLICT(user_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                age_range = excluded.age_range,
+                diagnosis_status = excluded.diagnosis_status,
+                emergency_contact_name = excluded.emergency_contact_name,
+                emergency_contact_phone = excluded.emergency_contact_phone,
+                emergency_contact_relation = excluded.emergency_contact_relation,
+                allow_emergency_contact_prompt = excluded.allow_emergency_contact_prompt,
+                daily_checkin_enabled = excluded.daily_checkin_enabled,
+                daily_checkin_time = excluded.daily_checkin_time,
+                medication_enabled = excluded.medication_enabled,
+                medication_time = excluded.medication_time,
+                appointment_enabled = excluded.appointment_enabled,
+                long_term_memory_enabled = excluded.long_term_memory_enabled,
+                updated_at = excluded.updated_at
+            """,
+            values,
+        )
+    return values
+
+
+def get_user_settings(user_id: str) -> dict[str, Any] | None:
+    ensure_app_schema()
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            row = conn.execute(
+                "SELECT * FROM user_settings WHERE user_id = %s",
+                (user_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    with sqlite_connection() as conn:
+        row = conn.execute("SELECT * FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_user_data(user_id: str) -> None:
+    ensure_app_schema()
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            conn.execute("DELETE FROM mood_logs WHERE user_id = %s", (user_id,))
+            conn.execute("DELETE FROM user_settings WHERE user_id = %s", (user_id,))
+        return
+
+    with sqlite_connection() as conn:
+        conn.execute("DELETE FROM mood_logs WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
