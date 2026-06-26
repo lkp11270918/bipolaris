@@ -28,6 +28,19 @@ export interface MoodLog extends CheckinData {
   createdAt: string
 }
 
+interface BackendMoodLog {
+  id: string
+  user_id: string
+  created_at: string
+  mood: number
+  sleep: number
+  energy: number
+  impulse: number
+  medication: CheckinData["medication"]
+  state: CheckinData["state"]
+  notes: string
+}
+
 export function getAnonymousUserId(): string {
   if (typeof window === "undefined") return "server"
   const existing = window.localStorage.getItem(ANON_ID_KEY)
@@ -115,6 +128,7 @@ export function saveMoodLog(checkin: CheckinData): MoodLog {
     createdAt: new Date().toISOString(),
   }
   window.localStorage.setItem(MOOD_LOG_KEY, JSON.stringify([next, ...logs].slice(0, 30)))
+  void syncMoodLog(next).catch(() => {})
   return next
 }
 
@@ -125,4 +139,63 @@ export function getMoodLogs(): MoodLog[] {
   } catch {
     return []
   }
+}
+
+export async function syncMoodLog(log: MoodLog): Promise<void> {
+  await fetch(`${API_BASE_URL}/mood-logs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(toBackendMoodLog(log)),
+  })
+}
+
+export async function fetchMoodLogs(limit = 30): Promise<MoodLog[]> {
+  const userId = getAnonymousUserId()
+  const params = new URLSearchParams({ user_id: userId, limit: String(limit) })
+  const response = await fetch(`${API_BASE_URL}/mood-logs?${params.toString()}`)
+  if (!response.ok) throw new Error(`Backend returned ${response.status}`)
+  const rows = (await response.json()) as BackendMoodLog[]
+  const remoteLogs = rows.map(fromBackendMoodLog)
+  const merged = mergeMoodLogs(remoteLogs, getMoodLogs()).slice(0, limit)
+  window.localStorage.setItem(MOOD_LOG_KEY, JSON.stringify(merged))
+  return merged
+}
+
+function toBackendMoodLog(log: MoodLog): BackendMoodLog {
+  return {
+    id: log.id,
+    user_id: getAnonymousUserId(),
+    created_at: log.createdAt,
+    mood: log.mood,
+    sleep: log.sleep,
+    energy: log.energy,
+    impulse: log.impulse,
+    medication: log.medication,
+    state: log.state,
+    notes: log.notes || "",
+  }
+}
+
+function fromBackendMoodLog(row: BackendMoodLog): MoodLog {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    mood: row.mood,
+    sleep: row.sleep,
+    energy: row.energy,
+    impulse: row.impulse,
+    medication: row.medication,
+    state: row.state,
+    notes: row.notes || "",
+  }
+}
+
+function mergeMoodLogs(...groups: MoodLog[][]): MoodLog[] {
+  const byId = new Map<string, MoodLog>()
+  for (const group of groups) {
+    for (const log of group) byId.set(log.id, log)
+  }
+  return Array.from(byId.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )
 }

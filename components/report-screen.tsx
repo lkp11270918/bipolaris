@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { FileText, Lock, TrendingUp, TrendingDown, Minus, ChevronRight, Download, Share2 } from "lucide-react"
-import { getMoodLogs, type MoodLog } from "@/lib/bipolaris-api"
+import { fetchMoodLogs, getMoodLogs, type MoodLog } from "@/lib/bipolaris-api"
 
 type ReportDay = MoodLog & { dateLabel: string }
 
@@ -41,6 +41,11 @@ export function ReportScreen() {
 
   useEffect(() => {
     setLogs(getMoodLogs())
+    fetchMoodLogs()
+      .then(setLogs)
+      .catch(() => {
+        setLogs(getMoodLogs())
+      })
   }, [])
 
   const reportDays = useMemo<ReportDay[]>(() => {

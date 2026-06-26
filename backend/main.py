@@ -6,11 +6,12 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
+from .persistence import list_mood_logs, save_mood_log
 from .retriever import LocalRetriever
 from .settings import (
     FEEDBACK_PATH,
@@ -104,6 +105,23 @@ class FeedbackRequest(BaseModel):
     risk_level: str | None = None
     bd_state: str | None = None
     selected_strategy: str | None = None
+
+
+class MoodLogRequest(BaseModel):
+    user_id: str = Field(min_length=3, max_length=120)
+    id: str = Field(min_length=3, max_length=120)
+    created_at: str
+    mood: int = Field(ge=0, le=5)
+    sleep: int = Field(ge=0, le=5)
+    energy: int = Field(ge=0, le=5)
+    impulse: int = Field(ge=0, le=5)
+    medication: Literal["taken", "missed", "partial", "none"]
+    state: Literal["stable", "manic", "depressed", "mixed", "unknown"]
+    notes: str = ""
+
+
+class MoodLogResponse(MoodLogRequest):
+    pass
 
 
 app = FastAPI(title="BiPolaris Backend", version="0.1.0")
@@ -365,6 +383,20 @@ def feedback(req: FeedbackRequest) -> dict[str, str]:
         },
     )
     return {"status": "ok"}
+
+
+@app.post("/mood-logs", response_model=MoodLogResponse)
+def create_mood_log(req: MoodLogRequest) -> MoodLogResponse:
+    saved = save_mood_log(req.model_dump())
+    return MoodLogResponse(**saved)
+
+
+@app.get("/mood-logs", response_model=list[MoodLogResponse])
+def get_mood_logs(
+    user_id: str = Query(min_length=3, max_length=120),
+    limit: int = Query(default=30, ge=1, le=90),
+) -> list[MoodLogResponse]:
+    return [MoodLogResponse(**row) for row in list_mood_logs(user_id=user_id, limit=limit)]
 
 
 @app.post("/chat", response_model=ChatResponse)
