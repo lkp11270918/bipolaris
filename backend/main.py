@@ -216,7 +216,14 @@ def infer_bd_state(message: str, state: UserState) -> BDState:
 
 
 def retrieve_examples(message: str, inferred_state: BDState) -> list[dict[str, Any]]:
-    rag_results = retriever.search(message, top_k=RAG_TOP_K, min_score=RAG_MIN_SCORE)
+    safety = safety_filter(message)
+    rag_results = retriever.search(
+        message,
+        top_k=RAG_TOP_K,
+        min_score=RAG_MIN_SCORE,
+        bd_state=inferred_state,
+        risk_level=safety.risk_level,
+    )
     if rag_results:
         return rag_results
 
