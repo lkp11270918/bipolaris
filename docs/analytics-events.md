@@ -119,3 +119,31 @@ Frontend events are sent to `POST /events`:
   }
 }
 ```
+
+## Product Owner Metrics Endpoint
+
+MVP metrics can be viewed from the backend endpoint:
+
+```text
+GET /admin/metrics?days=7
+```
+
+Production URL:
+
+```text
+https://bipolaris-api.onrender.com/admin/metrics?days=7
+```
+
+If `ADMIN_METRICS_TOKEN` is configured in Render, add it as a query parameter:
+
+```text
+https://bipolaris-api.onrender.com/admin/metrics?days=7&token=YOUR_TOKEN
+```
+
+The response includes:
+
+- Funnel: open, privacy confirmation, check-in completion, chat start
+- Engagement: messages, replies, feedback, chat errors
+- Safety: risk detection, crisis override, hotline clicks
+- Model quality: RAG hit rate, OpenAI usage rate, average response time
+- Settings/privacy: emergency contact, long-term memory, data export/delete

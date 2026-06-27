@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from .settings import APP_DB_PATH, DATABASE_URL
@@ -407,3 +408,34 @@ def save_event_log(row: dict[str, Any]) -> dict[str, Any]:
             values,
         )
     return values
+
+
+def list_event_logs(days: int = 7, limit: int = 20000) -> list[dict[str, Any]]:
+    ensure_app_schema()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            rows = conn.execute(
+                """
+                SELECT id, user_id, session_id, event_name, event_time, properties_json, app_version, platform
+                FROM event_logs
+                WHERE event_time >= %s
+                ORDER BY event_time DESC
+                LIMIT %s
+                """,
+                (cutoff, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    with sqlite_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, session_id, event_name, event_time, properties_json, app_version, platform
+            FROM event_logs
+            WHERE event_time >= ?
+            ORDER BY event_time DESC
+            LIMIT ?
+            """,
+            (cutoff, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]

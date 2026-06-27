@@ -36,6 +36,7 @@ PROCESSED_DIR = DATA_DIR / "processed"
 DB_PATH = DATA_DIR / "rag.sqlite3"
 APP_DB_PATH = DATA_DIR / "app.sqlite3"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+ADMIN_METRICS_TOKEN = os.getenv("ADMIN_METRICS_TOKEN", "")
 LOG_DIR = DATA_DIR / "logs"
 FEEDBACK_PATH = LOG_DIR / "feedback.jsonl"
 INTERACTION_LOG_PATH = LOG_DIR / "interactions.jsonl"

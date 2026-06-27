@@ -5,10 +5,11 @@ import os
 import re
 import time
 import uuid
+from collections import Counter
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,7 @@ from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
 from .persistence import (
     delete_user_data,
     get_user_settings,
+    list_event_logs,
     list_mood_logs,
     save_event_log,
     save_mood_log,
@@ -28,6 +30,7 @@ from .settings import (
     MAX_ADVICE_ITEMS,
     MAX_OUTPUT_TOKENS,
     MAX_QUESTIONS_PER_REPLY,
+    ADMIN_METRICS_TOKEN,
     OPENAI_MODEL,
     RAG_MAX_HISTORY,
     RAG_MIN_SCORE,
@@ -173,6 +176,19 @@ class EventLogRequest(BaseModel):
 class EventLogResponse(BaseModel):
     status: str
     id: str
+
+
+class AdminMetricsResponse(BaseModel):
+    window_days: int
+    total_events: int
+    active_users: int
+    active_sessions: int
+    funnel: dict[str, Any]
+    engagement: dict[str, Any]
+    safety: dict[str, Any]
+    model_quality: dict[str, Any]
+    settings: dict[str, Any]
+    raw_event_counts: dict[str, int]
 
 
 app = FastAPI(title="BiPolaris Backend", version="0.1.0")
@@ -414,6 +430,104 @@ def health() -> dict[str, str]:
 @app.get("/rag/status")
 def rag_status() -> dict[str, Any]:
     return {"ready": retriever.is_ready(), "documents": retriever.count_documents()}
+
+
+def percent(numerator: int | float, denominator: int | float) -> float:
+    if not denominator:
+        return 0.0
+    return round((float(numerator) / float(denominator)) * 100, 2)
+
+
+def parse_event_properties(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return json.loads(row.get("properties_json") or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+@app.get("/admin/metrics", response_model=AdminMetricsResponse)
+def admin_metrics(
+    days: int = Query(default=7, ge=1, le=90),
+    token: str | None = Query(default=None),
+) -> AdminMetricsResponse:
+    if ADMIN_METRICS_TOKEN and token != ADMIN_METRICS_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid admin metrics token")
+
+    rows = list_event_logs(days=days)
+    counts = Counter(str(row["event_name"]) for row in rows)
+    users = {str(row["user_id"]) for row in rows if row.get("user_id")}
+    sessions = {str(row["session_id"]) for row in rows if row.get("session_id")}
+
+    reply_rows = [row for row in rows if row["event_name"] == "assistant_reply_received"]
+    reply_props = [parse_event_properties(row) for row in reply_rows]
+    response_times = [
+        float(props["response_time_ms"])
+        for props in reply_props
+        if isinstance(props.get("response_time_ms"), (int, float))
+    ]
+    rag_hits = sum(1 for props in reply_props if props.get("used_rag"))
+    openai_hits = sum(1 for props in reply_props if props.get("used_openai"))
+    feedback_total = counts["feedback_submitted"]
+    negative_feedback = sum(
+        1
+        for row in rows
+        if row["event_name"] == "feedback_submitted"
+        and parse_event_properties(row).get("label") == "not_helpful"
+    )
+
+    app_opened = counts["app_opened"]
+    checkin_completed = counts["checkin_completed"]
+    chat_started = counts["chat_started"]
+    message_sent = counts["message_sent"]
+    assistant_replies = counts["assistant_reply_received"]
+    crisis_overrides = counts["crisis_override_triggered"]
+    hotline_clicks = counts["hotline_clicked"]
+
+    average_response_time = round(sum(response_times) / len(response_times), 2) if response_times else 0.0
+
+    return AdminMetricsResponse(
+        window_days=days,
+        total_events=len(rows),
+        active_users=len(users),
+        active_sessions=len(sessions),
+        funnel={
+            "app_opened": app_opened,
+            "privacy_notice_confirmed": counts["privacy_notice_confirmed"],
+            "checkin_completed": checkin_completed,
+            "chat_started": chat_started,
+            "checkin_completion_rate": percent(checkin_completed, app_opened),
+            "first_chat_conversion_rate": percent(chat_started, app_opened),
+        },
+        engagement={
+            "message_sent": message_sent,
+            "assistant_reply_received": assistant_replies,
+            "messages_per_active_user": round(message_sent / len(users), 2) if users else 0.0,
+            "feedback_submitted": feedback_total,
+            "negative_feedback": negative_feedback,
+            "negative_feedback_rate": percent(negative_feedback, feedback_total),
+            "chat_error": counts["chat_error"],
+        },
+        safety={
+            "risk_detected": counts["risk_detected"],
+            "crisis_override_triggered": crisis_overrides,
+            "hotline_clicked": hotline_clicks,
+            "hotline_click_rate_after_crisis": percent(hotline_clicks, crisis_overrides),
+        },
+        model_quality={
+            "rag_hit_rate": percent(rag_hits, assistant_replies),
+            "openai_usage_rate": percent(openai_hits, assistant_replies),
+            "average_response_time_ms": average_response_time,
+        },
+        settings={
+            "profile_saved": counts["profile_saved"],
+            "emergency_contact_added": counts["emergency_contact_added"],
+            "long_term_memory_enabled": counts["long_term_memory_enabled"],
+            "long_term_memory_disabled": counts["long_term_memory_disabled"],
+            "data_exported": counts["data_exported"],
+            "data_delete_requested": counts["data_delete_requested"],
+        },
+        raw_event_counts=dict(sorted(counts.items())),
+    )
 
 
 @app.post("/safety-filter", response_model=SafetyResult)
