@@ -45,6 +45,17 @@ USER_SETTINGS_COLUMNS = [
     "updated_at",
 ]
 
+EVENT_LOG_COLUMNS = [
+    "id",
+    "user_id",
+    "session_id",
+    "event_name",
+    "event_time",
+    "properties_json",
+    "app_version",
+    "platform",
+]
+
 
 def use_postgres() -> bool:
     return DATABASE_URL.startswith(("postgres://", "postgresql://")) and psycopg is not None
@@ -103,6 +114,22 @@ def ensure_app_schema() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS event_logs (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    event_name TEXT NOT NULL,
+                    event_time TEXT NOT NULL,
+                    properties_json TEXT NOT NULL DEFAULT '{}',
+                    app_version TEXT NOT NULL DEFAULT '',
+                    platform TEXT NOT NULL DEFAULT 'web'
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_user_id ON event_logs(user_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_event_name ON event_logs(event_name)")
         return
 
     with sqlite_connection() as conn:
@@ -144,6 +171,22 @@ def ensure_app_schema() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_logs (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                session_id TEXT NOT NULL DEFAULT '',
+                event_name TEXT NOT NULL,
+                event_time TEXT NOT NULL,
+                properties_json TEXT NOT NULL DEFAULT '{}',
+                app_version TEXT NOT NULL DEFAULT '',
+                platform TEXT NOT NULL DEFAULT 'web'
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_user_id ON event_logs(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_event_name ON event_logs(event_name)")
 
 
 def save_mood_log(row: dict[str, Any]) -> dict[str, Any]:
@@ -324,8 +367,43 @@ def delete_user_data(user_id: str) -> None:
         with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
             conn.execute("DELETE FROM mood_logs WHERE user_id = %s", (user_id,))
             conn.execute("DELETE FROM user_settings WHERE user_id = %s", (user_id,))
+            conn.execute("DELETE FROM event_logs WHERE user_id = %s", (user_id,))
         return
 
     with sqlite_connection() as conn:
         conn.execute("DELETE FROM mood_logs WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM event_logs WHERE user_id = ?", (user_id,))
+
+
+def save_event_log(row: dict[str, Any]) -> dict[str, Any]:
+    ensure_app_schema()
+    values = {key: row.get(key) for key in EVENT_LOG_COLUMNS}
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            conn.execute(
+                """
+                INSERT INTO event_logs (
+                    id, user_id, session_id, event_name, event_time, properties_json, app_version, platform
+                ) VALUES (
+                    %(id)s, %(user_id)s, %(session_id)s, %(event_name)s, %(event_time)s,
+                    %(properties_json)s, %(app_version)s, %(platform)s
+                )
+                ON CONFLICT (id) DO NOTHING
+                """,
+                values,
+            )
+        return values
+
+    with sqlite_connection() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO event_logs (
+                id, user_id, session_id, event_name, event_time, properties_json, app_version, platform
+            ) VALUES (
+                :id, :user_id, :session_id, :event_name, :event_time, :properties_json, :app_version, :platform
+            )
+            """,
+            values,
+        )
+    return values

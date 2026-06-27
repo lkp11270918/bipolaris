@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -11,7 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
-from .persistence import delete_user_data, get_user_settings, list_mood_logs, save_mood_log, save_user_settings
+from .persistence import (
+    delete_user_data,
+    get_user_settings,
+    list_mood_logs,
+    save_event_log,
+    save_mood_log,
+    save_user_settings,
+)
 from .retriever import LocalRetriever
 from .settings import (
     FEEDBACK_PATH,
@@ -148,6 +157,22 @@ class UserSettingsResponse(UserSettingsRequest):
 
 class DeleteUserDataRequest(BaseModel):
     user_id: str = Field(min_length=3, max_length=120)
+
+
+class EventLogRequest(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
+    user_id: str = Field(min_length=3, max_length=120)
+    session_id: str = Field(default="", max_length=120)
+    event_name: str = Field(min_length=2, max_length=80)
+    event_time: str = ""
+    properties: dict[str, Any] = Field(default_factory=dict)
+    app_version: str = "0.1.0"
+    platform: str = "web"
+
+
+class EventLogResponse(BaseModel):
+    status: str
+    id: str
 
 
 app = FastAPI(title="BiPolaris Backend", version="0.1.0")
@@ -418,6 +443,52 @@ def feedback(req: FeedbackRequest) -> dict[str, str]:
     return {"status": "ok"}
 
 
+def sanitize_event_properties(properties: dict[str, Any]) -> dict[str, Any]:
+    blocked_keys = {
+        "message",
+        "content",
+        "reply",
+        "notes",
+        "phone",
+        "emergency_contact_phone",
+        "raw_text",
+        "conversation",
+    }
+    sanitized: dict[str, Any] = {}
+    for key, value in properties.items():
+        if key in blocked_keys:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            sanitized[key] = value
+        elif isinstance(value, list):
+            sanitized[key] = [item for item in value if isinstance(item, (str, int, float, bool))][:20]
+        elif isinstance(value, dict):
+            sanitized[key] = {
+                nested_key: nested_value
+                for nested_key, nested_value in value.items()
+                if nested_key not in blocked_keys and isinstance(nested_value, (str, int, float, bool))
+            }
+    return sanitized
+
+
+@app.post("/events", response_model=EventLogResponse)
+def create_event(req: EventLogRequest) -> EventLogResponse:
+    event_id = req.id or str(uuid.uuid4())
+    save_event_log(
+        {
+            "id": event_id,
+            "user_id": req.user_id,
+            "session_id": req.session_id,
+            "event_name": req.event_name,
+            "event_time": req.event_time or datetime.now().isoformat(timespec="seconds"),
+            "properties_json": json.dumps(sanitize_event_properties(req.properties), ensure_ascii=False),
+            "app_version": req.app_version,
+            "platform": req.platform,
+        }
+    )
+    return EventLogResponse(status="ok", id=event_id)
+
+
 @app.post("/mood-logs", response_model=MoodLogResponse)
 def create_mood_log(req: MoodLogRequest) -> MoodLogResponse:
     saved = save_mood_log(req.model_dump())
@@ -474,6 +545,7 @@ def remove_user_data(req: DeleteUserDataRequest) -> dict[str, str]:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
+    started_at = time.perf_counter()
     payload = synthesize_context(req)
     safety = payload["safety"]
     if safety["should_override_llm"]:
@@ -489,6 +561,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         context_payload=payload,
         used_openai=used_openai,
     )
+    latency_ms = round((time.perf_counter() - started_at) * 1000)
     append_jsonl(
         INTERACTION_LOG_PATH,
         {
@@ -499,6 +572,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "rag_ready": payload.get("rag_status", {}).get("ready"),
             "rag_documents": payload.get("rag_status", {}).get("documents"),
             "retrieved_count": len(payload.get("retrieved_examples") or []),
+            "rag_top_source": (payload.get("retrieved_examples") or [{}])[0].get("source")
+            if payload.get("retrieved_examples")
+            else None,
+            "latency_ms": latency_ms,
             "message_length": len(req.message),
             "history_turns": len(req.history),
         },

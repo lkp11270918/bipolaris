@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react"
 import { Send, AlertTriangle, Phone, Loader2, ThumbsUp, ThumbsDown } from "lucide-react"
 import type { CheckinData } from "./checkin-screen"
-import { requestChatReply, submitFeedback, type ChatHistoryMessage } from "@/lib/bipolaris-api"
+import { requestChatReply, submitFeedback, trackEvent, type ChatHistoryMessage } from "@/lib/bipolaris-api"
 
 interface Message {
   id: string
@@ -41,6 +41,7 @@ function CrisisBanner() {
           <div className="space-y-1.5">
             <a
               href="tel:4001619995"
+              onClick={() => trackEvent("hotline_clicked", { hotline: "hope24", source: "crisis_banner" })}
               className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-xl px-3 py-2"
             >
               <Phone className="w-4 h-4" />
@@ -48,6 +49,7 @@ function CrisisBanner() {
             </a>
             <a
               href="tel:120"
+              onClick={() => trackEvent("hotline_clicked", { hotline: "120", source: "crisis_banner" })}
               className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-xl px-3 py-2"
             >
               <Phone className="w-4 h-4" />
@@ -148,6 +150,7 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
       }
       setMessages((prev) => [...prev, aiMsg])
     } catch {
+      trackEvent("chat_error", { stage: "request_chat_reply", local_risk: risk, checkin_state: checkinData.state })
       const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",

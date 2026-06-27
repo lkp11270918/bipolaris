@@ -18,6 +18,7 @@ import {
   getMoodLogs,
   getUserSettings,
   saveUserSettings,
+  trackEvent,
   type UserSettings,
 } from "@/lib/bipolaris-api"
 
@@ -100,6 +101,10 @@ export function SettingsScreen() {
 
   function updateSetting<K extends keyof UserSettings>(key: K, value: UserSettings[K]) {
     persist({ ...settings, [key]: value })
+    trackEvent("setting_toggled", { key: String(key), value })
+    if (key === "longTermMemoryEnabled") {
+      trackEvent(value ? "long_term_memory_enabled" : "long_term_memory_disabled")
+    }
   }
 
   async function handleDeleteData() {
@@ -182,14 +187,15 @@ export function SettingsScreen() {
             </div>
             {hasContact && (
               <button
-                onClick={() =>
+                onClick={() => {
                   persist({
                     ...settings,
                     emergencyContactName: "",
                     emergencyContactPhone: "",
                     emergencyContactRelation: "",
                   }, "已移除紧急联系人")
-                }
+                  trackEvent("emergency_contact_removed")
+                }}
                 className="w-8 h-8 rounded-full flex items-center justify-center text-muted-foreground"
               >
                 <Trash2 className="w-4 h-4" />
@@ -282,7 +288,10 @@ export function SettingsScreen() {
               />
             </div>
             <button
-              onClick={() => setModal("privacy")}
+              onClick={() => {
+                trackEvent("privacy_policy_viewed", { source: "settings" })
+                setModal("privacy")
+              }}
               className="w-full flex items-center justify-between px-4 py-3.5 text-left"
             >
               <div className="flex items-center gap-3">
@@ -304,6 +313,7 @@ export function SettingsScreen() {
                 link.download = "bipolaris-data.json"
                 link.click()
                 URL.revokeObjectURL(url)
+                trackEvent("data_exported", { mood_log_count: logs.length })
               }}
               className="w-full flex items-center justify-between px-4 py-3.5 text-left"
             >
@@ -384,6 +394,11 @@ export function SettingsScreen() {
                 <button
                   onClick={() => {
                     persist(draft, "个人信息已保存")
+                    trackEvent("profile_saved", {
+                      has_display_name: Boolean(draft.displayName),
+                      has_age_range: Boolean(draft.ageRange),
+                      has_diagnosis_status: Boolean(draft.diagnosisStatus),
+                    })
                     setModal(null)
                   }}
                   className="w-full py-4 rounded-2xl text-base font-medium bg-primary text-primary-foreground active:scale-[0.98]"
@@ -430,6 +445,11 @@ export function SettingsScreen() {
                   <button
                     onClick={() => {
                       persist(draft, "紧急联系人已保存")
+                      trackEvent("emergency_contact_added", {
+                        has_name: Boolean(draft.emergencyContactName),
+                        has_phone: Boolean(draft.emergencyContactPhone),
+                        has_relation: Boolean(draft.emergencyContactRelation),
+                      })
                       setModal(null)
                     }}
                     disabled={!draft.emergencyContactName && !draft.emergencyContactPhone}

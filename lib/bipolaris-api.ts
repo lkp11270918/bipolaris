@@ -6,6 +6,7 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "https://bipolaris-api.onrender.com"
 
 const ANON_ID_KEY = "bipolaris_anonymous_user_id"
+const SESSION_ID_KEY = "bipolaris_session_id"
 const MOOD_LOG_KEY = "bipolaris_mood_logs"
 const USER_SETTINGS_KEY = "bipolaris_user_settings"
 
@@ -87,6 +88,54 @@ export function getAnonymousUserId(): string {
   return id
 }
 
+export function getSessionId(): string {
+  if (typeof window === "undefined") return "server"
+  const existing = window.sessionStorage.getItem(SESSION_ID_KEY)
+  if (existing) return existing
+  const id = `sess_${crypto.randomUUID()}`
+  window.sessionStorage.setItem(SESSION_ID_KEY, id)
+  return id
+}
+
+export function trackEvent(eventName: string, properties: Record<string, unknown> = {}) {
+  if (typeof window === "undefined") return
+  const payload = {
+    id: crypto.randomUUID(),
+    user_id: getAnonymousUserId(),
+    session_id: getSessionId(),
+    event_name: eventName,
+    event_time: new Date().toISOString(),
+    app_version: "0.1.0",
+    platform: "web",
+    properties: sanitizeEventProperties(properties),
+  }
+  void fetch(`${API_BASE_URL}/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch(() => {})
+}
+
+function sanitizeEventProperties(properties: Record<string, unknown>): Record<string, unknown> {
+  const blocked = new Set([
+    "message",
+    "content",
+    "reply",
+    "notes",
+    "phone",
+    "emergencyContactPhone",
+    "emergency_contact_phone",
+    "conversation",
+  ])
+  return Object.fromEntries(
+    Object.entries(properties).filter(([key, value]) => {
+      if (blocked.has(key)) return false
+      if (value == null) return true
+      return ["string", "number", "boolean"].includes(typeof value) || Array.isArray(value)
+    }),
+  )
+}
+
 export function checkinToBackendState(checkin: CheckinData) {
   const settings = getUserSettings()
   const hasContact = Boolean(settings.emergencyContactName || settings.emergencyContactPhone)
@@ -128,6 +177,17 @@ export async function requestChatReply(
   checkin: CheckinData,
   history: ChatHistoryMessage[],
 ): Promise<BackendChatResponse> {
+  const startedAt = performance.now()
+  trackEvent("message_sent", {
+    message_length: message.length,
+    checkin_state: checkin.state,
+    mood: checkin.mood,
+    sleep: checkin.sleep,
+    energy: checkin.energy,
+    impulse: checkin.impulse,
+    medication: checkin.medication,
+    history_turns: history.length,
+  })
   const response = await fetch(`${API_BASE_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -138,7 +198,31 @@ export async function requestChatReply(
     }),
   })
   if (!response.ok) throw new Error(`Backend returned ${response.status}`)
-  return response.json()
+  const data = (await response.json()) as BackendChatResponse
+  const retrieved = (data.context_payload?.retrieved_examples as Array<Record<string, unknown>> | undefined) || []
+  trackEvent("assistant_reply_received", {
+    risk_level: data.risk_level,
+    bd_state: data.context_payload?.inferred_bd_state as string | undefined,
+    selected_strategy: data.selected_strategy,
+    used_openai: data.used_openai,
+    used_rag: retrieved.length > 0,
+    rag_top_source: retrieved[0]?.source,
+    rag_top_score: retrieved[0]?.score,
+    response_time_ms: Math.round(performance.now() - startedAt),
+    reply_length: data.reply.length,
+  })
+  if (data.risk_level !== "low") {
+    trackEvent("risk_detected", {
+      risk_level: data.risk_level,
+      bd_state: data.context_payload?.inferred_bd_state as string | undefined,
+    })
+  }
+  if (data.risk_level === "crisis") {
+    trackEvent("crisis_override_triggered", {
+      bd_state: data.context_payload?.inferred_bd_state as string | undefined,
+    })
+  }
+  return data
 }
 
 export async function submitFeedback(payload: {
@@ -150,6 +234,13 @@ export async function submitFeedback(payload: {
   bdState?: string
   selectedStrategy?: string
 }) {
+  trackEvent("feedback_submitted", {
+    label: payload.label,
+    rating: payload.rating,
+    risk_level: payload.riskLevel,
+    bd_state: payload.bdState,
+    selected_strategy: payload.selectedStrategy,
+  })
   await fetch(`${API_BASE_URL}/feedback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -173,6 +264,15 @@ export function saveMoodLog(checkin: CheckinData): MoodLog {
     createdAt: new Date().toISOString(),
   }
   window.localStorage.setItem(MOOD_LOG_KEY, JSON.stringify([next, ...logs].slice(0, 30)))
+  trackEvent("mood_log_created", {
+    mood: checkin.mood,
+    sleep: checkin.sleep,
+    energy: checkin.energy,
+    impulse: checkin.impulse,
+    medication: checkin.medication,
+    state: checkin.state,
+    has_notes: Boolean(checkin.notes),
+  })
   void syncMoodLog(next).catch(() => {})
   return next
 }
@@ -215,6 +315,17 @@ export function getUserSettings(): UserSettings {
 export function saveUserSettings(settings: UserSettings): UserSettings {
   const next = { ...settings, userId: getAnonymousUserId(), updatedAt: new Date().toISOString() }
   window.localStorage.setItem(USER_SETTINGS_KEY, JSON.stringify(next))
+  trackEvent("user_settings_saved", {
+    has_display_name: Boolean(next.displayName),
+    has_age_range: Boolean(next.ageRange),
+    has_diagnosis_status: Boolean(next.diagnosisStatus),
+    has_emergency_contact: Boolean(next.emergencyContactName || next.emergencyContactPhone),
+    allow_emergency_contact_prompt: next.allowEmergencyContactPrompt,
+    daily_checkin_enabled: next.dailyCheckinEnabled,
+    medication_enabled: next.medicationEnabled,
+    appointment_enabled: next.appointmentEnabled,
+    long_term_memory_enabled: next.longTermMemoryEnabled,
+  })
   void syncUserSettings(next).catch(() => {})
   return next
 }
@@ -238,6 +349,7 @@ export async function syncUserSettings(settings: UserSettings): Promise<void> {
 }
 
 export async function deleteMyData(): Promise<void> {
+  trackEvent("data_delete_requested")
   await fetch(`${API_BASE_URL}/delete-user-data`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

@@ -1,13 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { MessageCircle, BarChart2, Settings } from "lucide-react"
 import { WelcomeScreen } from "@/components/welcome-screen"
 import { CheckinScreen, type CheckinData } from "@/components/checkin-screen"
 import { ChatScreen } from "@/components/chat-screen"
 import { ReportScreen } from "@/components/report-screen"
 import { SettingsScreen } from "@/components/settings-screen"
-import { saveMoodLog } from "@/lib/bipolaris-api"
+import { saveMoodLog, trackEvent } from "@/lib/bipolaris-api"
 
 type AppPhase = "welcome" | "checkin" | "main"
 type MainTab = "chat" | "report" | "settings"
@@ -27,10 +27,19 @@ export default function Page() {
   const [activeTab, setActiveTab] = useState<MainTab>("chat")
   const [checkinData, setCheckinData] = useState<CheckinData>(defaultCheckin)
 
+  useEffect(() => {
+    trackEvent("app_opened")
+  }, [])
+
   if (phase === "welcome") {
     return (
       <div className="max-w-md mx-auto" style={{ height: "100dvh" }}>
-        <WelcomeScreen onComplete={() => setPhase("checkin")} />
+        <WelcomeScreen
+          onComplete={() => {
+            trackEvent("privacy_notice_confirmed")
+            setPhase("checkin")
+          }}
+        />
       </div>
     )
   }
@@ -41,7 +50,18 @@ export default function Page() {
         <CheckinScreen
           onComplete={(data) => {
             setCheckinData(data)
+            trackEvent("checkin_completed", {
+              mood: data.mood,
+              sleep: data.sleep,
+              energy: data.energy,
+              impulse: data.impulse,
+              medication: data.medication,
+              state: data.state,
+              skipped: data.mood <= 0,
+              has_notes: Boolean(data.notes),
+            })
             if (data.mood > 0) saveMoodLog(data)
+            trackEvent("chat_started", { source: "checkin_complete", state: data.state })
             setPhase("main")
           }}
         />
@@ -87,7 +107,10 @@ export default function Page() {
             return (
               <button
                 key={key}
-                onClick={() => setActiveTab(key)}
+                onClick={() => {
+                  setActiveTab(key)
+                  trackEvent(`${key}_tab_viewed`)
+                }}
                 className={`flex-1 flex flex-col items-center py-3 gap-0.5 transition-colors relative ${
                   isActive ? "text-primary" : "text-muted-foreground"
                 }`}
