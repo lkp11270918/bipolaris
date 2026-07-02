@@ -192,6 +192,7 @@ export async function requestChatReply(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      user_id: getAnonymousUserId(),
       message,
       state: checkinToBackendState(checkin),
       history: history.slice(-8),

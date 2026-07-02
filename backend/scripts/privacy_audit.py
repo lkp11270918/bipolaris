@@ -80,6 +80,8 @@ def audit_interaction_log(path: Path) -> list[str]:
         "latency_ms",
         "message_length",
         "history_turns",
+        "long_term_memory_enabled",
+        "long_term_memory_records",
         "output_guardrail_passed",
         "output_guardrail_rewritten",
         "output_guardrail_violations",

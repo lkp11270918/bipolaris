@@ -91,6 +91,7 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    user_id: str | None = Field(default=None, max_length=120)
     message: str
     state: UserState = Field(default_factory=UserState)
     history: list[ChatMessage] = Field(default_factory=list)
@@ -302,6 +303,62 @@ def select_strategy(
     return "Reflection of feelings + Restatement or Paraphrasing"
 
 
+def build_long_term_memory(user_id: str | None) -> dict[str, Any]:
+    if not user_id:
+        return {"enabled": False, "reason": "missing_user_id"}
+    settings = get_user_settings(user_id)
+    if settings and not bool(settings.get("long_term_memory_enabled", True)):
+        return {"enabled": False, "reason": "disabled_by_user"}
+
+    logs = list_mood_logs(user_id, limit=30)
+    if not logs:
+        return {"enabled": True, "record_count": 0, "summary": "暂无长期记录。"}
+
+    def avg(key: str) -> float:
+        return round(sum(int(log.get(key) or 0) for log in logs) / len(logs), 2)
+
+    state_counts = Counter(str(log.get("state") or "unknown") for log in logs)
+    medication_counts = Counter(str(log.get("medication") or "none") for log in logs)
+    warning_logs = [
+        log
+        for log in logs
+        if int(log.get("sleep") or 0) <= 2
+        or int(log.get("impulse") or 0) >= 4
+        or str(log.get("state")) in {"manic", "mixed"}
+    ]
+    note_terms = Counter()
+    for log in logs:
+        for term in re.findall(r"[\u4e00-\u9fff]{2,6}|[a-zA-Z]{3,}", str(log.get("notes") or "").lower()):
+            if term not in {"今天", "感觉", "有点", "没有", "自己"}:
+                note_terms[term] += 1
+
+    dominant_state = state_counts.most_common(1)[0][0]
+    return {
+        "enabled": True,
+        "record_count": len(logs),
+        "date_range": {
+            "latest": logs[0].get("created_at"),
+            "earliest": logs[-1].get("created_at"),
+        },
+        "trend": {
+            "avg_mood": avg("mood"),
+            "avg_sleep": avg("sleep"),
+            "avg_energy": avg("energy"),
+            "avg_impulse": avg("impulse"),
+            "dominant_state": dominant_state,
+            "state_counts": dict(state_counts),
+            "medication_counts": dict(medication_counts),
+            "warning_days": len(warning_logs),
+        },
+        "possible_triggers": [term for term, _ in note_terms.most_common(6)],
+        "summary": (
+            f"最近 {len(logs)} 条记录中，主要状态为 {dominant_state}，"
+            f"平均情绪 {avg('mood')}/5，平均睡眠 {avg('sleep')}/5，"
+            f"平均冲动 {avg('impulse')}/5；需关注记录 {len(warning_logs)} 次。"
+        ),
+    }
+
+
 def synthesize_context(req: ChatRequest) -> dict[str, Any]:
     safety = safety_filter(req.message)
     inferred_state = infer_bd_state(req.message, req.state)
@@ -317,6 +374,7 @@ def synthesize_context(req: ChatRequest) -> dict[str, Any]:
         "retrieved_examples": retrieved_examples,
         "dataset_notes": DATASET_NOTES,
         "rag_status": {"ready": retriever.is_ready(), "documents": retriever.count_documents()},
+        "long_term_memory": build_long_term_memory(req.user_id),
         "response_policy": {
             "max_advice_items": MAX_ADVICE_ITEMS,
             "max_questions_per_reply": MAX_QUESTIONS_PER_REPLY,
@@ -702,6 +760,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "latency_ms": latency_ms,
             "message_length": len(req.message),
             "history_turns": len(req.history),
+            "long_term_memory_enabled": bool(payload.get("long_term_memory", {}).get("enabled")),
+            "long_term_memory_records": int(payload.get("long_term_memory", {}).get("record_count") or 0),
         },
     )
     return response
