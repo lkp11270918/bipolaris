@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Send, AlertTriangle, Phone, Loader2, ThumbsUp, ThumbsDown } from "lucide-react"
+import { Send, AlertTriangle, Phone, Loader2, ThumbsUp, ThumbsDown, ChevronRight } from "lucide-react"
 import type { CheckinData } from "./checkin-screen"
 import { requestChatReply, submitFeedback, trackEvent, type ChatHistoryMessage } from "@/lib/bipolaris-api"
+import { featuredCrisisResources, telHref } from "@/lib/crisis-resources"
 
 interface Message {
   id: string
@@ -39,21 +40,26 @@ function CrisisBanner() {
         <div>
           <p className="text-sm font-medium text-destructive mb-2">紧急支持</p>
           <div className="space-y-1.5">
+            {featuredCrisisResources.map((resource) => (
+              <a
+                key={resource.id}
+                href={telHref(resource.phone)}
+                onClick={() => trackEvent("hotline_clicked", { hotline: resource.id, source: "crisis_banner" })}
+                className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-xl px-3 py-2"
+              >
+                <Phone className="w-4 h-4" />
+                {resource.name} {resource.phone}
+              </a>
+            ))}
             <a
-              href="tel:4001619995"
-              onClick={() => trackEvent("hotline_clicked", { hotline: "hope24", source: "crisis_banner" })}
-              className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-xl px-3 py-2"
+              href="/crisis-resources"
+              target="_blank"
+              rel="noreferrer"
+              onClick={() => trackEvent("crisis_resources_opened", { source: "crisis_banner" })}
+              className="flex items-center justify-between gap-2 text-sm text-foreground bg-card border border-destructive/20 rounded-xl px-3 py-2"
             >
-              <Phone className="w-4 h-4" />
-              希望24热线 400-161-9995
-            </a>
-            <a
-              href="tel:120"
-              onClick={() => trackEvent("hotline_clicked", { hotline: "120", source: "crisis_banner" })}
-              className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-xl px-3 py-2"
-            >
-              <Phone className="w-4 h-4" />
-              急救电话 120
+              查看更多危机资源
+              <ChevronRight className="w-4 h-4 text-muted-foreground" />
             </a>
           </div>
         </div>

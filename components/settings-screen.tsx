@@ -6,11 +6,13 @@ import {
   ChevronRight,
   Database,
   Download,
+  HeartPulse,
   Phone,
   Shield,
   Trash2,
   UserCircle,
 } from "lucide-react"
+import { CrisisResourcesList } from "@/components/crisis-resources"
 import {
   deleteMyData,
   fetchUserSettings,
@@ -22,7 +24,7 @@ import {
   type UserSettings,
 } from "@/lib/bipolaris-api"
 
-type Modal = "profile" | "contact" | "privacy" | "delete" | null
+type Modal = "profile" | "contact" | "privacy" | "resources" | "delete" | null
 
 function Toggle({
   checked,
@@ -212,6 +214,26 @@ export function SettingsScreen() {
               onChange={(checked) => updateSetting("allowEmergencyContactPrompt", checked)}
             />
           </div>
+        </section>
+
+        <section>
+          <h2 className="text-sm font-semibold text-foreground mb-3">安全支持</h2>
+          <button
+            onClick={() => {
+              trackEvent("crisis_resources_opened", { source: "settings" })
+              setModal("resources")
+            }}
+            className="w-full bg-card border border-border rounded-2xl p-4 flex items-center gap-3 text-left active:scale-[0.99] transition-transform"
+          >
+            <div className="w-9 h-9 rounded-full bg-red-50 flex items-center justify-center">
+              <HeartPulse className="w-4 h-4 text-destructive" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground">危机资源与热线</p>
+              <p className="text-xs text-muted-foreground truncate">查看中国及海外心理危机支持资源</p>
+            </div>
+            <ChevronRight className="w-4 h-4 text-muted-foreground" />
+          </button>
         </section>
 
         <section>
@@ -533,6 +555,16 @@ export function SettingsScreen() {
                     安全说明
                   </a>
                 </div>
+              </>
+            )}
+
+            {modal === "resources" && (
+              <>
+                <h3 className="text-lg font-semibold text-foreground mb-2">危机资源与热线</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed mb-4">
+                  以下资源用于心理危机、强烈痛苦、自伤/自杀风险或无法自控时寻求现实支持。
+                </p>
+                <CrisisResourcesList compact source="settings_modal" />
               </>
             )}
 
