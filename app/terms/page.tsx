@@ -59,7 +59,7 @@ export default function TermsPage() {
             <h2 className="text-lg font-semibold mb-2">7. 免责声明</h2>
             <p>
               在法律允许范围内，BiPolaris 不对因用户将 AI 回复作为医疗、法律、财务或紧急处置依据而产生的后果承担责任。
-              正式公开发布前，本协议应由法务审核并根据目标地区法律完善。
+              用户应结合自身情况、专业意见和现实支持系统作出判断。
             </p>
           </section>
         </div>

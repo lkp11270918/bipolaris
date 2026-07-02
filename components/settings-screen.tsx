@@ -297,8 +297,8 @@ export function SettingsScreen() {
               <div className="flex items-center gap-3">
                 <Shield className="w-4 h-4 text-muted-foreground" />
                 <div>
-                  <p className="text-sm text-foreground">数据加密说明</p>
-                  <p className="text-xs text-muted-foreground">查看政策、安全说明与数据控制</p>
+                  <p className="text-sm text-foreground">隐私、合规与安全说明</p>
+                  <p className="text-xs text-muted-foreground">查看政策、服务边界与数据控制</p>
                 </div>
               </div>
               <ChevronRight className="w-4 h-4 text-muted-foreground" />
@@ -343,14 +343,15 @@ export function SettingsScreen() {
         </section>
 
         <section className="bg-card border border-border rounded-2xl p-4">
-          <h2 className="text-sm font-semibold text-foreground mb-2">简短版隐私承诺</h2>
-          <ul className="space-y-1.5 text-xs text-muted-foreground leading-relaxed">
-            <li>不公开你的聊天内容</li>
-            <li>不将心理健康数据用于广告推荐</li>
-            <li>不在未经授权的情况下分享你的完整对话</li>
-            <li>支持你查看、导出和删除自己的数据</li>
-            <li>在高风险场景下优先保护你的安全</li>
-          </ul>
+          <h2 className="text-sm font-semibold text-foreground mb-2">隐私与安全治理</h2>
+          <div className="space-y-3 text-xs text-muted-foreground leading-relaxed">
+            <p>
+              BiPolaris 依据隐私政策和用户协议处理用户数据，采用最小化收集、传输加密、敏感字段加密和访问控制等措施保护情绪健康相关信息。
+            </p>
+            <p>
+              产品设置了医疗边界和心理安全规则：AI 回复不替代诊断、处方、治疗方案或急救服务；识别高风险场景时，会优先引导用户联系危机热线、急救电话或现实支持者。
+            </p>
+          </div>
         </section>
 
         <p className="text-center text-xs text-muted-foreground">
@@ -467,12 +468,12 @@ export function SettingsScreen() {
 
             {modal === "privacy" && (
               <>
-                <h3 className="text-lg font-semibold text-foreground mb-4">数据与隐私说明</h3>
+                <h3 className="text-lg font-semibold text-foreground mb-4">隐私、合规与安全说明</h3>
                 <div className="space-y-4 text-sm text-foreground leading-relaxed">
                   <div>
-                    <h4 className="font-medium mb-1">数据加密保护</h4>
+                    <h4 className="font-medium mb-1">数据保护措施</h4>
                     <p className="text-xs text-muted-foreground">
-                      BiPolaris 会对你的敏感信息进行加密保护，包括对话内容、情绪状态记录、睡眠与精力记录、风险识别结果和紧急联系人信息。这些信息在传输和存储过程中都会进行加密处理，降低泄露和未经授权访问的风险。
+                      BiPolaris 会对情绪状态、睡眠与精力记录、风险识别结果、紧急联系人等敏感信息采取传输加密、字段加密、访问控制和日志脱敏等保护措施，降低泄露和未经授权访问的风险。
                     </p>
                   </div>
                   <div>
@@ -482,21 +483,21 @@ export function SettingsScreen() {
                     </p>
                   </div>
                   <div>
-                    <h4 className="font-medium mb-1">身份与内容分离</h4>
+                    <h4 className="font-medium mb-1">服务条款与用户权利</h4>
                     <p className="text-xs text-muted-foreground">
-                      为了降低隐私风险，你的账户信息和心理健康内容会尽量分离存储。即使系统需要分析你的状态，也会优先使用匿名化或去标识化方式。
+                      我们通过隐私政策和用户协议说明数据处理方式、服务边界、用户权利和禁止用途。你可以查看记录、导出数据、删除数据、关闭长期记忆或取消紧急联系人授权。
                     </p>
                   </div>
                   <div>
-                    <h4 className="font-medium mb-1">你可以控制自己的数据</h4>
+                    <h4 className="font-medium mb-1">心理临床安全边界</h4>
                     <p className="text-xs text-muted-foreground">
-                      你可以查看历史记录、删除对话内容、关闭长期记忆、导出状态报告、取消紧急联系人授权。
+                      BiPolaris 不提供诊断、处方、剂量调整、治疗方案或急救服务。涉及用药、诊断和治疗，请咨询精神科医生、医生或药师。
                     </p>
                   </div>
                   <div>
-                    <h4 className="font-medium mb-1">高风险场景说明</h4>
+                    <h4 className="font-medium mb-1">高风险场景处理</h4>
                     <p className="text-xs text-muted-foreground">
-                      如果系统识别到你可能处于自伤、自杀或其他紧急风险中，BiPolaris 会优先提供危机资源和求助建议。除非你主动授权，系统不会把完整对话内容分享给他人。
+                      如果系统识别到自伤、自杀、伤害他人、药物过量或严重失控风险，BiPolaris 会优先提供危机资源和求助建议。除非你主动授权，系统不会在普通对话中自动向紧急联系人发送完整对话内容。
                     </p>
                   </div>
                 </div>

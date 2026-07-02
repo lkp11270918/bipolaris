@@ -41,8 +41,8 @@ export default function PrivacyPage() {
             <h2 className="text-lg font-semibold mb-2">4. 数据保护</h2>
             <ul className="list-disc pl-5 space-y-1">
               <li>传输过程使用 HTTPS/TLS。</li>
-              <li>生产环境应配置云数据库加密和访问控制。</li>
-              <li>紧急联系人、诊疗状态、年龄段、昵称和 mood notes 支持应用层字段加密。</li>
+              <li>云数据库、后台接口和运维访问会配置必要的访问控制。</li>
+              <li>紧急联系人、诊疗状态、年龄段、昵称和情绪备注等敏感字段支持应用层加密。</li>
               <li>分析埋点默认不保存完整聊天原文、回复原文、电话和自由文本备注。</li>
               <li>后台指标接口支持管理员 token 保护。</li>
             </ul>
@@ -84,7 +84,7 @@ export default function PrivacyPage() {
           <section>
             <h2 className="text-lg font-semibold mb-2">9. 联系与更新</h2>
             <p>
-              本政策会随产品功能、合规要求和部署环境更新。正式公开发布前，应由法务和临床顾问完成审核。
+              本政策会随产品功能、合规要求和部署环境更新。若政策发生重要变化，我们会在产品内或通过适当方式提示用户。
             </p>
           </section>
         </div>
