@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -67,10 +68,55 @@ def infer_topic(text: str, metadata: dict[str, Any] | None = None) -> str:
     return "general_support"
 
 
-def chunk_text(text: str, size: int = 900, overlap: int = 180) -> list[str]:
+def infer_intent(text: str) -> str:
+    lowered = text.lower()
+    if any(term in lowered for term in ["怎么办", "怎么做", "建议", "help", "what should i do"]):
+        return "seeking_action"
+    if any(term in lowered for term in ["是不是", "诊断", "确诊", "am i", "do i have"]):
+        return "seeking_diagnosis"
+    if any(term in lowered for term in ["停药", "加药", "减药", "剂量", "med", "dose"]):
+        return "medication_decision"
+    if any(term in lowered for term in ["复诊", "报告", "摘要", "医生"]):
+        return "followup_preparation"
+    return "emotional_disclosure"
+
+
+def evidence_quality(text: str, source: str) -> str:
+    if source.startswith("bipolaris/"):
+        return "policy"
+    if len(text) < 80:
+        return "low_context"
+    if any(term in text.lower() for term in ["i ", "my ", "我", "自己"]):
+        return "lived_experience"
+    return "support_example"
+
+
+def sentence_units(text: str) -> list[str]:
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return []
+    pieces = re.split(r"(?<=[。！？!?；;])\s+|(?<=[。！？!?；;])|(?<=\.)\s+", cleaned)
+    return [piece.strip() for piece in pieces if piece.strip()]
+
+
+def chunk_text(text: str, size: int = 720, overlap: int = 120) -> list[str]:
     cleaned = " ".join(text.split())
     if len(cleaned) <= size:
         return [cleaned]
+
+    units = sentence_units(cleaned)
+    if len(units) > 1:
+        chunks: list[str] = []
+        current = ""
+        for unit in units:
+            if current and len(current) + len(unit) + 1 > size:
+                chunks.append(current.strip())
+                current = current[-overlap:].strip() if overlap else ""
+            current = f"{current} {unit}".strip()
+        if current:
+            chunks.append(current.strip())
+        return chunks
+
     chunks: list[str] = []
     start = 0
     while start < len(cleaned):
@@ -120,7 +166,7 @@ def prepare_esconv(max_turns: int) -> list[dict[str, Any]]:
                     "source": "thu-coai/esconv",
                     "text": turn.get("text", "").strip(),
                     "retrieval_text": retrieval_text,
-                    "metadata": {
+            "metadata": {
                         "dataset": ESCONV,
                         "doc_type": "support_example",
                         "split": "train",
@@ -131,6 +177,11 @@ def prepare_esconv(max_turns: int) -> list[dict[str, Any]]:
                         "risk_level": infer_risk_level(retrieval_text),
                         "bd_state": infer_bd_state_from_text(retrieval_text),
                         "topic": infer_topic(retrieval_text, item),
+                        "intent": infer_intent(retrieval_text),
+                        "evidence_quality": evidence_quality(turn.get("text", ""), ESCONV),
+                        "chunk_method": "dialogue_turn_window",
+                        "chunk_size_chars": len(turn.get("text", "")),
+                        "parent_id": f"esconv-train-{row_idx}",
                     },
                 }
             )
@@ -188,6 +239,12 @@ def prepare_bipolar(max_docs: int) -> list[dict[str, Any]]:
                             "risk_level": infer_risk_level(chunk),
                             "bd_state": infer_bd_state_from_text(chunk),
                             "topic": infer_topic(chunk),
+                            "intent": infer_intent(chunk),
+                            "evidence_quality": evidence_quality(chunk, KANAKMI),
+                            "chunk_method": "sentence_window",
+                            "chunk_size_chars": len(chunk),
+                            "parent_id": f"kanakmi-train-{doc_count}",
+                            "chunk_index": chunk_idx,
                         },
                     }
                 )

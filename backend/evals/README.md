@@ -47,3 +47,21 @@ Last local full run:
 The observed badcases were risk-level disagreements, mostly medium-risk
 threshold differences around phrases such as "崩溃", "受不了", and relationship
 distress. No LLM-as-judge scoring was used for this baseline.
+
+## RAG Retrieval Eval
+
+RAG quality is evaluated separately from full dialogue generation:
+
+```bash
+.venv/bin/python -m backend.evals.run_rag_eval
+```
+
+This checks whether retrieval returns the expected source, document type, topic,
+and key evidence for crisis, medication-boundary, manic, mixed, depressive, and
+follow-up-summary queries.
+
+Current local smoke result:
+
+- Cases: 7
+- Passed: 7
+- Pass rate: 1.0

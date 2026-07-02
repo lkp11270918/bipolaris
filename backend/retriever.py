@@ -97,9 +97,17 @@ class LocalRetriever:
         risk_level: str | None = None,
     ) -> list[dict[str, Any]]:
         context = self._infer_query_context(query, bd_state=bd_state, risk_level=risk_level)
+        vector_results = self._vector_search(query, top_k=max(top_k * 3, 12), min_score=min_score, context=context)
+        lexical_results = self._lexical_search(query, top_k=max(top_k * 3, 12), context=context)
+        fused = self._fuse_results(vector_results, lexical_results, top_k=top_k, context=context)
+        return fused or lexical_results[:top_k]
+
+    def _vector_search(
+        self, query: str, top_k: int, min_score: float, context: dict[str, str]
+    ) -> list[dict[str, Any]]:
         query_embedding = self.embed_query(query)
         if not query_embedding:
-            return self._lexical_search(query, top_k=top_k, context=context)
+            return []
 
         scored: list[tuple[float, float, RagDocument]] = []
         for doc in self._load_docs():
@@ -114,6 +122,7 @@ class LocalRetriever:
         for score, base_score, doc in scored[:top_k]:
             results.append(
                 {
+                    "doc_id": doc.doc_id,
                     "source": doc.source,
                     "score": round(score, 4),
                     "base_score": round(base_score, 4),
@@ -122,7 +131,7 @@ class LocalRetriever:
                     "metadata": {**doc.metadata, "retrieval_mode": "vector_rerank", "query_context": context},
                 }
             )
-        return results or self._lexical_search(query, top_k=top_k, context=context)
+        return results
 
     def _infer_query_context(
         self, query: str, bd_state: str | None = None, risk_level: str | None = None
@@ -141,6 +150,8 @@ class LocalRetriever:
             topic = "work_stress"
         elif any(term in lowered for term in ["感情", "关系", "伴侣", "家人", "relationship"]):
             topic = "relationship"
+        elif any(term in lowered for term in ["起不来", "没动力", "不想动", "什么都不想做", "低落"]):
+            topic = "depressed_micro_action"
 
         inferred_risk = risk_level or "low"
         if any(term in lowered for term in ["自杀", "轻生", "不想活", "活着没意义", "结束这一切", "自残", "吞药", "过量"]):
@@ -164,7 +175,7 @@ class LocalRetriever:
         doc_state = str(metadata.get("bd_state") or "stable")
         doc_topic = str(metadata.get("topic") or "")
 
-        if doc_type in {"safety_rule", "medical_boundary", "clinical_knowledge", "product_knowledge"}:
+        if doc_type in {"safety_rule", "medical_boundary", "clinical_knowledge", "product_knowledge", "support_strategy"}:
             score += 0.08
         if doc_risk == context["risk_level"]:
             score += 0.12
@@ -184,6 +195,14 @@ class LocalRetriever:
             score += 0.1
         if context["bd_state"] == "manic" and context["topic"] == "sleep" and doc_topic == "manic_warning_signs":
             score += 0.12
+        if context["bd_state"] == "depressed" and doc_topic == "depressed_micro_action":
+            score += 0.16
+        if str(metadata.get("evidence_quality") or "") == "policy":
+            score += 0.06
+        if str(metadata.get("intent") or "") in {"medication_decision", "seeking_diagnosis"} and context[
+            "topic"
+        ] in {"medication_boundary", "followup_summary"}:
+            score += 0.04
         return max(0.0, score)
 
     def _query_terms(self, query: str) -> list[str]:
@@ -251,6 +270,7 @@ class LocalRetriever:
             metadata = doc.get("metadata") or {}
             results.append(
                 {
+                    "doc_id": doc.get("doc_id"),
                     "source": doc.get("source"),
                     "score": round(min(score, 1.0), 4),
                     "summary": doc.get("text"),
@@ -259,6 +279,35 @@ class LocalRetriever:
                 }
             )
         return results
+
+    def _fuse_results(
+        self,
+        vector_results: list[dict[str, Any]],
+        lexical_results: list[dict[str, Any]],
+        top_k: int,
+        context: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        combined: dict[str, dict[str, Any]] = {}
+        rank_constant = 60
+
+        for mode, results in (("vector", vector_results), ("lexical", lexical_results)):
+            for rank, item in enumerate(results, start=1):
+                key = str(item.get("doc_id") or f"{item.get('source')}::{item.get('summary')}")
+                current = combined.setdefault(key, {**item, "fusion_modes": [], "fusion_score": 0.0})
+                current["fusion_modes"].append(mode)
+                current["fusion_score"] += 1.0 / (rank_constant + rank)
+                current["score"] = max(float(current.get("score") or 0.0), float(item.get("score") or 0.0))
+
+        fused = list(combined.values())
+        for item in fused:
+            metadata = item.get("metadata") or {}
+            item["score"] = round(float(item.get("score") or 0.0) + float(item["fusion_score"]), 4)
+            metadata["retrieval_mode"] = "+".join(sorted(set(item.pop("fusion_modes"))))
+            metadata["query_context"] = context
+            item["metadata"] = metadata
+
+        fused.sort(key=lambda item: (float(item.get("score") or 0.0), float(item.get("fusion_score") or 0.0)), reverse=True)
+        return fused[:top_k]
 
     def infer_strategy(self, results: list[dict[str, Any]]) -> str | None:
         strategies = [item.get("strategy") for item in results if item.get("strategy")]
