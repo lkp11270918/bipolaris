@@ -57,12 +57,10 @@ export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
             ))}
           </div>
 
-          <button
-            type="button"
-            onClick={() => setAgreed(!agreed)}
-            className="flex items-start gap-3 cursor-pointer mb-8 text-left w-full"
-          >
-            <div
+          <div className="flex items-start gap-3 mb-8 text-left w-full">
+            <button
+              type="button"
+              onClick={() => setAgreed(!agreed)}
               className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors ${
                 agreed ? "bg-primary border-primary" : "border-border bg-card"
               }`}
@@ -72,13 +70,13 @@ export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
                   <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               )}
-            </div>
+            </button>
             <span className="text-sm text-foreground leading-relaxed">
               我已阅读并理解以上内容，同意
-              <span className="text-primary"> 用户协议 </span>与
-              <span className="text-primary"> 隐私政策</span>
+              <a className="text-primary" href="/terms" target="_blank" rel="noreferrer"> 用户协议 </a>与
+              <a className="text-primary" href="/privacy" target="_blank" rel="noreferrer"> 隐私政策</a>
             </span>
-          </button>
+          </div>
         </div>
 
         <div className="px-6 pb-8 pt-2">

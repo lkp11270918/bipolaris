@@ -3,3 +3,4 @@ uvicorn>=0.30.0
 openai>=1.99.0
 psycopg[binary]>=3.2.0
 pyarrow>=24.0.0
+cryptography>=43.0.0

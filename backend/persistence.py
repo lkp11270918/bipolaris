@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
+from .crypto import decrypt_text, encrypt_text
 from .settings import APP_DB_PATH, DATABASE_URL
 
 try:
@@ -56,6 +57,30 @@ EVENT_LOG_COLUMNS = [
     "app_version",
     "platform",
 ]
+
+MOOD_LOG_ENCRYPTED_COLUMNS = ["notes"]
+USER_SETTINGS_ENCRYPTED_COLUMNS = [
+    "display_name",
+    "age_range",
+    "diagnosis_status",
+    "emergency_contact_name",
+    "emergency_contact_phone",
+    "emergency_contact_relation",
+]
+
+
+def encrypt_columns(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
+    next_row = dict(row)
+    for column in columns:
+        next_row[column] = encrypt_text(str(next_row.get(column) or ""))
+    return next_row
+
+
+def decrypt_columns(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
+    next_row = dict(row)
+    for column in columns:
+        next_row[column] = decrypt_text(str(next_row.get(column) or ""))
+    return next_row
 
 
 def use_postgres() -> bool:
@@ -192,7 +217,7 @@ def ensure_app_schema() -> None:
 
 def save_mood_log(row: dict[str, Any]) -> dict[str, Any]:
     ensure_app_schema()
-    values = {key: row.get(key) for key in MOOD_LOG_COLUMNS}
+    values = encrypt_columns({key: row.get(key) for key in MOOD_LOG_COLUMNS}, MOOD_LOG_ENCRYPTED_COLUMNS)
     if use_postgres():
         with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
             conn.execute(
@@ -216,7 +241,7 @@ def save_mood_log(row: dict[str, Any]) -> dict[str, Any]:
                 """,
                 values,
             )
-        return values
+        return decrypt_columns(values, MOOD_LOG_ENCRYPTED_COLUMNS)
 
     with sqlite_connection() as conn:
         conn.execute(
@@ -239,7 +264,7 @@ def save_mood_log(row: dict[str, Any]) -> dict[str, Any]:
             """,
             values,
         )
-    return values
+    return decrypt_columns(values, MOOD_LOG_ENCRYPTED_COLUMNS)
 
 
 def list_mood_logs(user_id: str, limit: int = 30) -> list[dict[str, Any]]:
@@ -256,7 +281,7 @@ def list_mood_logs(user_id: str, limit: int = 30) -> list[dict[str, Any]]:
                 """,
                 (user_id, limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [decrypt_columns(dict(row), MOOD_LOG_ENCRYPTED_COLUMNS) for row in rows]
 
     with sqlite_connection() as conn:
         rows = conn.execute(
@@ -269,12 +294,12 @@ def list_mood_logs(user_id: str, limit: int = 30) -> list[dict[str, Any]]:
             """,
             (user_id, limit),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [decrypt_columns(dict(row), MOOD_LOG_ENCRYPTED_COLUMNS) for row in rows]
 
 
 def save_user_settings(row: dict[str, Any]) -> dict[str, Any]:
     ensure_app_schema()
-    values = {key: row.get(key) for key in USER_SETTINGS_COLUMNS}
+    values = encrypt_columns({key: row.get(key) for key in USER_SETTINGS_COLUMNS}, USER_SETTINGS_ENCRYPTED_COLUMNS)
     if use_postgres():
         with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
             conn.execute(
@@ -310,7 +335,7 @@ def save_user_settings(row: dict[str, Any]) -> dict[str, Any]:
                 ,
                 values,
             )
-        return values
+        return decrypt_columns(values, USER_SETTINGS_ENCRYPTED_COLUMNS)
 
     with sqlite_connection() as conn:
         conn.execute(
@@ -344,7 +369,7 @@ def save_user_settings(row: dict[str, Any]) -> dict[str, Any]:
             """,
             values,
         )
-    return values
+    return decrypt_columns(values, USER_SETTINGS_ENCRYPTED_COLUMNS)
 
 
 def get_user_settings(user_id: str) -> dict[str, Any] | None:
@@ -355,11 +380,11 @@ def get_user_settings(user_id: str) -> dict[str, Any] | None:
                 "SELECT * FROM user_settings WHERE user_id = %s",
                 (user_id,),
             ).fetchone()
-        return dict(row) if row else None
+        return decrypt_columns(dict(row), USER_SETTINGS_ENCRYPTED_COLUMNS) if row else None
 
     with sqlite_connection() as conn:
         row = conn.execute("SELECT * FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
-    return dict(row) if row else None
+    return decrypt_columns(dict(row), USER_SETTINGS_ENCRYPTED_COLUMNS) if row else None
 
 
 def delete_user_data(user_id: str) -> None:

@@ -298,7 +298,7 @@ export function SettingsScreen() {
                 <Shield className="w-4 h-4 text-muted-foreground" />
                 <div>
                   <p className="text-sm text-foreground">数据加密说明</p>
-                  <p className="text-xs text-muted-foreground">查看、导出或删除自己的记录</p>
+                  <p className="text-xs text-muted-foreground">查看政策、安全说明与数据控制</p>
                 </div>
               </div>
               <ChevronRight className="w-4 h-4 text-muted-foreground" />
@@ -506,6 +506,32 @@ export function SettingsScreen() {
                 >
                   我知道了，继续使用
                 </button>
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <a
+                    href="/privacy"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-center text-xs text-primary bg-accent rounded-2xl py-3"
+                  >
+                    隐私政策
+                  </a>
+                  <a
+                    href="/terms"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-center text-xs text-primary bg-accent rounded-2xl py-3"
+                  >
+                    用户协议
+                  </a>
+                  <a
+                    href="/security"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-center text-xs text-primary bg-accent rounded-2xl py-3"
+                  >
+                    安全说明
+                  </a>
+                </div>
               </>
             )}
 
