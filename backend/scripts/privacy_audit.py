@@ -80,6 +80,9 @@ def audit_interaction_log(path: Path) -> list[str]:
         "latency_ms",
         "message_length",
         "history_turns",
+        "output_guardrail_passed",
+        "output_guardrail_rewritten",
+        "output_guardrail_violations",
         "timestamp",
     }
     with path.open("r", encoding="utf-8") as handle:

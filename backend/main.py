@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
+from .output_guardrails import apply_output_guardrail
 from .persistence import (
     delete_user_data,
     get_user_settings,
@@ -356,14 +357,14 @@ def fallback_reply(payload: dict[str, Any]) -> str:
         return (
             "我听到你现在像是处在一种很满、很快、很难停下来的状态里。"
             "这不代表你做错了什么，但它确实值得我们先把速度降下来一点。\n\n"
-            "先把今天所有重大决定延后到明天：花钱、辞职、争吵、通宵、突然联系很多人，都先暂停。"
+            "先把今天所有重大决定延迟到明天，也就是先延后处理：花钱、辞职、争吵、通宵、突然联系很多人，都先暂停。"
             "你可以现在喝几口水，把屏幕亮度调低，做 5 次慢呼吸，然后给一个可信任的人发消息："
             "“我现在有点停不下来，能不能陪我稳定一下？”\n\n"
             f"我会按“{strategy}”的方式陪你，不急着评判，只先帮你保护睡眠和安全。"
         )
     if state == "depressed":
         return (
-            "听起来你真的很累，而且这种累不是一句“振作点”就能过去的。"
+            "听起来你真的很累，最近的压力也已经压到身体和情绪上了，而且这种累不是一句“振作点”就能过去的。"
             "你愿意把它说出来，本身就说明你还在努力给自己找一点支撑。\n\n"
             "我们先把目标降到很小：喝一口水、吃一点东西、洗把脸，或者只把身体从床上坐起来 1 分钟。"
             "今天不需要证明自己很强，只要让自己离安全近一点点。\n\n"
@@ -667,6 +668,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
         used_openai = False
     else:
         reply, used_openai = await call_openai(payload)
+    reply, output_guardrail = apply_output_guardrail(reply, payload)
+    payload["output_guardrail"] = {
+        "passed": output_guardrail.passed,
+        "violations": output_guardrail.violations,
+        "rewritten": output_guardrail.rewritten,
+    }
 
     response = ChatResponse(
         reply=reply,
@@ -686,6 +693,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "rag_ready": payload.get("rag_status", {}).get("ready"),
             "rag_documents": payload.get("rag_status", {}).get("documents"),
             "retrieved_count": len(payload.get("retrieved_examples") or []),
+            "output_guardrail_passed": output_guardrail.passed,
+            "output_guardrail_rewritten": output_guardrail.rewritten,
+            "output_guardrail_violations": output_guardrail.violations,
             "rag_top_source": (payload.get("retrieved_examples") or [{}])[0].get("source")
             if payload.get("retrieved_examples")
             else None,
