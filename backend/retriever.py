@@ -28,6 +28,33 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
+def normalize_evidence_metadata(source: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(metadata)
+    dataset = str(normalized.get("dataset") or source)
+    doc_type = str(normalized.get("doc_type") or "")
+    if "authority_level" not in normalized:
+        if doc_type in {"official_guideline", "official_patient_education"}:
+            normalized["authority_level"] = "A"
+        elif doc_type in {"safety_rule", "medical_boundary", "clinical_knowledge", "support_strategy"}:
+            normalized["authority_level"] = "B"
+        else:
+            normalized["authority_level"] = "C"
+    if "evidence_type" not in normalized:
+        if doc_type in {"official_guideline", "official_patient_education", "clinical_knowledge"}:
+            normalized["evidence_type"] = "clinical_knowledge"
+        elif doc_type in {"safety_rule", "medical_boundary", "support_strategy"}:
+            normalized["evidence_type"] = "support_policy"
+        elif dataset == "thu-coai/esconv":
+            normalized["evidence_type"] = "conversation_example"
+        else:
+            normalized["evidence_type"] = "lived_experience"
+    normalized["medical_fact_allowed"] = normalized.get("authority_level") == "A"
+    normalized.setdefault("source_title", source)
+    normalized.setdefault("published_at", "")
+    normalized.setdefault("reviewed_at", "")
+    return normalized
+
+
 class LocalRetriever:
     def __init__(self, api_key: str | None, db_path=DB_PATH, embedding_model: str = OPENAI_EMBEDDING_MODEL) -> None:
         self.api_key = api_key
@@ -95,12 +122,28 @@ class LocalRetriever:
         min_score: float = 0.18,
         bd_state: str | None = None,
         risk_level: str | None = None,
+        topic: str | None = None,
+        medical_fact_required: bool = False,
+        allowed_authority_levels: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         context = self._infer_query_context(query, bd_state=bd_state, risk_level=risk_level)
+        if topic:
+            context["topic"] = topic
         vector_results = self._vector_search(query, top_k=max(top_k * 3, 12), min_score=min_score, context=context)
         lexical_results = self._lexical_search(query, top_k=max(top_k * 3, 12), context=context)
         fused = self._fuse_results(vector_results, lexical_results, top_k=top_k, context=context)
-        return fused or lexical_results[:top_k]
+        candidates = fused or lexical_results
+        if medical_fact_required:
+            candidates = [
+                item for item in candidates if (item.get("metadata") or {}).get("medical_fact_allowed") is True
+            ]
+        elif allowed_authority_levels:
+            candidates = [
+                item
+                for item in candidates
+                if str((item.get("metadata") or {}).get("authority_level")) in allowed_authority_levels
+            ]
+        return candidates[:top_k]
 
     def _vector_search(
         self, query: str, top_k: int, min_score: float, context: dict[str, str]
@@ -112,6 +155,7 @@ class LocalRetriever:
         scored: list[tuple[float, float, RagDocument]] = []
         for doc in self._load_docs():
             assert doc.embedding is not None
+            doc.metadata = normalize_evidence_metadata(doc.source, doc.metadata)
             base_score = cosine_similarity(query_embedding, doc.embedding)
             final_score = self._rerank_score(base_score, doc.metadata, context)
             if base_score >= min_score or final_score >= min_score:
@@ -174,6 +218,7 @@ class LocalRetriever:
         doc_risk = str(metadata.get("risk_level") or "low")
         doc_state = str(metadata.get("bd_state") or "stable")
         doc_topic = str(metadata.get("topic") or "")
+        authority_level = str(metadata.get("authority_level") or "C")
 
         if doc_type in {"safety_rule", "medical_boundary", "clinical_knowledge", "product_knowledge", "support_strategy"}:
             score += 0.08
@@ -199,6 +244,10 @@ class LocalRetriever:
             score += 0.16
         if str(metadata.get("evidence_quality") or "") == "policy":
             score += 0.06
+        if authority_level == "A":
+            score += 0.12
+        elif authority_level == "B":
+            score += 0.04
         if str(metadata.get("intent") or "") in {"medication_decision", "seeking_diagnosis"} and context[
             "topic"
         ] in {"medication_boundary", "followup_summary"}:
@@ -256,13 +305,14 @@ class LocalRetriever:
 
         scored: list[tuple[float, dict[str, Any]]] = []
         for doc in docs:
+            metadata = normalize_evidence_metadata(str(doc.get("source") or ""), doc.get("metadata") or {})
             searchable = f"{doc.get('retrieval_text', '')}\n{doc.get('text', '')}".lower()
             matches = sum(1 for term in query_terms if term in searchable)
             if not matches:
                 continue
             score = matches / max(len(set(query_terms)), 1)
-            score = self._rerank_score(score, doc.get("metadata") or {}, context)
-            scored.append((score, doc))
+            score = self._rerank_score(score, metadata, context)
+            scored.append((score, {**doc, "metadata": metadata}))
 
         scored.sort(key=lambda item: item[0], reverse=True)
         results: list[dict[str, Any]] = []

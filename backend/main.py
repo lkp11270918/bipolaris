@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
 from .classification import classify_risk_semantically, classify_state_semantically
 from .crypto import encrypt_text
+from .decision_pipeline import TurnAssessment, assess_turn, plan_response
+from .longitudinal import build_longitudinal_state
 from .output_guardrails import apply_output_guardrail
 from .persistence import (
     delete_user_data,
@@ -148,6 +150,9 @@ class ChatResponse(BaseModel):
     selected_strategy: str
     context_payload: dict[str, Any]
     used_openai: bool
+    assessment: dict[str, Any] = Field(default_factory=dict)
+    response_plan: dict[str, Any] = Field(default_factory=dict)
+    pipeline_version: str = "decision-strategy-response-v1"
 
 
 class FeedbackRequest(BaseModel):
@@ -358,7 +363,11 @@ def infer_bd_state(message: str, state: UserState, history: list[ChatMessage] | 
     return StateResult(state="unknown", confidence=0.45, evidence=["insufficient_evidence"], source="fallback")
 
 
-def retrieve_examples(message: str, inferred_state: BDState) -> list[dict[str, Any]]:
+def retrieve_examples(
+    message: str,
+    inferred_state: BDState,
+    assessment: TurnAssessment | None = None,
+) -> list[dict[str, Any]]:
     # Retrieval only needs a cheap routing hint; full semantic safety analysis happens once upstream.
     safety = safety_filter(message, [], semantic_enabled=False)
     rag_results = retriever.search(
@@ -367,6 +376,8 @@ def retrieve_examples(message: str, inferred_state: BDState) -> list[dict[str, A
         min_score=RAG_MIN_SCORE,
         bd_state=inferred_state,
         risk_level=safety.risk_level,
+        topic=assessment.topic if assessment else None,
+        medical_fact_required=assessment.needs_medical_facts if assessment else False,
     )
     if rag_results:
         return rag_results
@@ -412,26 +423,43 @@ def build_long_term_memory(user_id: str | None, current_state: UserState | None 
         return {"enabled": False, "reason": "disabled_by_user"}
 
     logs = list_mood_logs(user_id, limit=30)
+    analysis = build_longitudinal_state(logs)
     if not logs:
-        return {"enabled": True, "record_count": 0, "summary": "暂无长期记录。"}
-
-    def avg(key: str, rows: list[dict[str, Any]] | None = None) -> float:
-        selected = rows or logs
-        return round(sum(int(log.get(key) or 0) for log in selected) / len(selected), 2)
-
-    baseline_rows = logs[1:] if len(logs) > 1 else logs
-    recent_rows = logs[:7]
-    change_signals: list[dict[str, Any]] = []
-    if current_state and len(logs) >= 3 and len(baseline_rows) >= 2:
-        comparisons = {
-            "sleep": (current_state.sleep / 2, avg("sleep", baseline_rows), -1.0, "睡眠低于个人近期基线"),
-            "energy": (current_state.energy / 2, avg("energy", baseline_rows), 1.0, "精力高于个人近期基线"),
-            "impulse": (current_state.impulsivity / 2, avg("impulse", baseline_rows), 1.0, "冲动高于个人近期基线"),
+        return {"enabled": True, **analysis, "summary": "暂无长期记录。"}
+    if current_state and len(logs) >= 3:
+        baseline = analysis["personal_baseline"]
+        current_comparisons = {
+            "sleep": (current_state.sleep / 2, -1.0, "睡眠低于个人近期基线"),
+            "energy": (current_state.energy / 2, 1.0, "精力高于个人近期基线"),
+            "impulse": (current_state.impulsivity / 2, 1.0, "冲动高于个人近期基线"),
         }
-        for metric, (current, baseline, threshold, label) in comparisons.items():
-            delta = round(current - baseline, 2)
+        existing_metrics = {item.get("metric") for item in analysis["change_signals"]}
+        for metric, (current, threshold, label) in current_comparisons.items():
+            baseline_value = baseline.get(f"avg_{metric}")
+            if baseline_value is None or metric in existing_metrics:
+                continue
+            delta = round(current - float(baseline_value), 2)
             if (threshold < 0 and delta <= threshold) or (threshold > 0 and delta >= threshold):
-                change_signals.append({"metric": metric, "current": current, "baseline": baseline, "delta": delta, "label": label})
+                signal = {
+                    "metric": metric,
+                    "window": "current",
+                    "recent": current,
+                    "baseline_window": "30d",
+                    "baseline": baseline_value,
+                    "delta": delta,
+                    "label": label,
+                }
+                analysis["change_signals"].append(signal)
+                analysis["evidence"].append(
+                    {
+                        "metric": metric,
+                        "recent_window": "current",
+                        "baseline_window": "30d",
+                        "recent_value": current,
+                        "baseline_value": baseline_value,
+                        "delta": delta,
+                    }
+                )
 
     state_counts = Counter(str(log.get("state") or "unknown") for log in logs)
     medication_counts = Counter(str(log.get("medication") or "none") for log in logs)
@@ -449,37 +477,20 @@ def build_long_term_memory(user_id: str | None, current_state: UserState | None 
                 note_terms[term] += 1
 
     dominant_state = state_counts.most_common(1)[0][0]
+    window_30 = analysis["windows"]["30d"]
     return {
         "enabled": True,
-        "record_count": len(logs),
-        "date_range": {
-            "latest": logs[0].get("created_at"),
-            "earliest": logs[-1].get("created_at"),
-        },
+        **analysis,
         "trend": {
-            "avg_mood": avg("mood"),
-            "avg_sleep": avg("sleep"),
-            "avg_energy": avg("energy"),
-            "avg_impulse": avg("impulse"),
+            "avg_mood": window_30.get("avg_mood"),
+            "avg_sleep": window_30.get("avg_sleep"),
+            "avg_energy": window_30.get("avg_energy"),
+            "avg_impulse": window_30.get("avg_impulse"),
             "dominant_state": dominant_state,
             "state_counts": dict(state_counts),
             "medication_counts": dict(medication_counts),
             "warning_days": len(warning_logs),
         },
-        "personal_baseline": {
-            "records": len(baseline_rows),
-            "avg_mood": avg("mood", baseline_rows),
-            "avg_sleep": avg("sleep", baseline_rows),
-            "avg_energy": avg("energy", baseline_rows),
-            "avg_impulse": avg("impulse", baseline_rows),
-        },
-        "recent_7_records": {
-            "avg_mood": avg("mood", recent_rows),
-            "avg_sleep": avg("sleep", recent_rows),
-            "avg_energy": avg("energy", recent_rows),
-            "avg_impulse": avg("impulse", recent_rows),
-        },
-        "change_signals": change_signals,
         "personalization": {
             "support_goals": settings.get("support_goals", []) if settings else [],
             "user_stage": settings.get("user_stage", "ongoing_care") if settings else "ongoing_care",
@@ -487,8 +498,8 @@ def build_long_term_memory(user_id: str | None, current_state: UserState | None 
         "possible_triggers": [term for term, _ in note_terms.most_common(6)],
         "summary": (
             f"最近 {len(logs)} 条记录中，主要状态为 {dominant_state}，"
-            f"平均情绪 {avg('mood')}/5，平均睡眠 {avg('sleep')}/5，"
-            f"平均冲动 {avg('impulse')}/5；需关注记录 {len(warning_logs)} 次。"
+            f"30 天平均情绪 {window_30.get('avg_mood')}/5，平均睡眠 {window_30.get('avg_sleep')}/5，"
+            f"平均冲动 {window_30.get('avg_impulse')}/5；需关注记录 {len(warning_logs)} 次。"
         ),
     }
 
@@ -529,20 +540,35 @@ def synthesize_context(req: ChatRequest) -> dict[str, Any]:
     safety = safety_filter(req.message, req.history)
     state_result = infer_bd_state(req.message, req.state, req.history)
     inferred_state = state_result.state
-    retrieved_examples = retrieve_examples(req.message, inferred_state)
-    selected_strategy = select_strategy(req.message, inferred_state, safety, retrieved_examples)
+    long_term_memory = build_long_term_memory(req.user_id, req.state)
+    assessment = assess_turn(
+        req.message,
+        safety.model_dump(),
+        state_result.model_dump(),
+        long_term_memory,
+    )
+    retrieved_examples = retrieve_examples(req.message, inferred_state, assessment)
+    response_plan = plan_response(
+        assessment,
+        retrieved_examples,
+        max_advice_items=MAX_ADVICE_ITEMS,
+        max_questions=MAX_QUESTIONS_PER_REPLY,
+    )
+    selected_strategy = " + ".join(response_plan.strategies)
 
     return {
+        "pipeline_version": "decision-strategy-response-v1",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "user_state": req.state.model_dump(),
         "inferred_bd_state": inferred_state,
         "state_analysis": state_result.model_dump(),
         "safety": safety.model_dump(),
+        "turn_assessment": assessment.model_dump(),
+        "response_plan": response_plan.model_dump(),
         "selected_support_strategy": selected_strategy,
         "retrieved_examples": retrieved_examples,
-        "dataset_notes": DATASET_NOTES,
         "rag_status": {"ready": retriever.is_ready(), "documents": retriever.count_documents()},
-        "long_term_memory": build_long_term_memory(req.user_id, req.state),
+        "long_term_memory": long_term_memory,
         "conversation_memory": build_history_memory(req.history),
         "prompt_attack": detect_prompt_attack(req.message),
         "response_policy": {
@@ -632,9 +658,19 @@ def fallback_reply(payload: dict[str, Any]) -> str:
 
 
 def build_model_input(payload: dict[str, Any]) -> str:
+    trusted_context = {
+        "assessment": payload.get("turn_assessment"),
+        "response_plan": payload.get("response_plan"),
+        "longitudinal_evidence": (payload.get("long_term_memory") or {}).get("evidence", []),
+        "retrieved_evidence": payload.get("retrieved_examples", []),
+        "conversation_memory": payload.get("conversation_memory"),
+        "latest_user_message": payload.get("latest_user_message"),
+    }
     return (
-        "请基于以下隐藏 Context Payload 回复用户。不要暴露 JSON，不要声称自己完成了临床诊断。\n\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        "严格执行 response_plan 生成一条面向用户的中文回复。"
+        "只把 A 级证据当作医疗事实；B 级只用于支持策略；C 级只能帮助理解语言。"
+        "不得暴露内部结构，不得把状态推断写成诊断。\n\n"
+        f"{json.dumps(trusted_context, ensure_ascii=False, indent=2)}"
     )
 
 
@@ -934,6 +970,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
         selected_strategy=payload["selected_support_strategy"],
         context_payload=payload,
         used_openai=used_openai,
+        assessment=payload["turn_assessment"],
+        response_plan=payload["response_plan"],
+        pipeline_version=payload["pipeline_version"],
     )
     latency_ms = round((time.perf_counter() - started_at) * 1000)
     append_jsonl(

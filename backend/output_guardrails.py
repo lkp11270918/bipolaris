@@ -78,6 +78,9 @@ def inspect_output(reply: str, payload: dict[str, Any]) -> OutputGuardrailResult
     violations: list[str] = []
     risk_level = str((payload.get("safety") or {}).get("risk_level") or "low")
     latest_message = str(payload.get("latest_user_message") or "")
+    assessment = payload.get("turn_assessment") or {}
+    retrieved = payload.get("retrieved_examples") or []
+    longitudinal_evidence = (payload.get("long_term_memory") or {}).get("evidence") or []
 
     if _matches_any(DIAGNOSIS_PATTERNS, reply):
         violations.append("diagnosis_claim")
@@ -103,8 +106,18 @@ def inspect_output(reply: str, payload: dict[str, Any]) -> OutputGuardrailResult
         ("诊断" in reply and any(term in reply for term in ["不能", "无法", "不提供", "医生"]))
     ):
         violations.append("diagnosis_boundary_missing")
+    if assessment.get("needs_medical_facts") and not any(
+        str((item.get("metadata") or {}).get("authority_level")) == "A" for item in retrieved
+    ):
+        violations.append("missing_authoritative_evidence")
+    if any(term in reply for term in ["根据你的记录", "比你平时", "相对你的基线", "个人基线"]) and not longitudinal_evidence:
+        violations.append("unsupported_longitudinal_claim")
 
-    max_questions = int((payload.get("response_policy") or {}).get("max_questions_per_reply") or 1)
+    max_questions = int(
+        (payload.get("response_plan") or {}).get("max_questions")
+        if (payload.get("response_plan") or {}).get("max_questions") is not None
+        else (payload.get("response_policy") or {}).get("max_questions_per_reply") or 1
+    )
     if count_questions(reply) > max_questions:
         violations.append("too_many_questions")
 
@@ -166,6 +179,18 @@ def _safe_boundary_reply(payload: dict[str, Any], violations: list[str]) -> str:
             "你描述的状态值得认真对待，但我不能根据一段对话给出诊断结论。"
             "我可以帮你把近期的睡眠、情绪、精力、冲动和触发事件整理成复诊时可以带给医生的信息。\n\n"
             "如果这些变化已经影响到安全、工作、人际或用药，请尽快联系精神科医生或心理健康专业人员。"
+        )
+
+    if "missing_authoritative_evidence" in violations:
+        return (
+            "你问到的内容涉及医疗事实，我目前没有足够的权威资料来可靠回答，也不能据此给出诊断或用药决定。"
+            "你可以先记录相关症状、持续时间、睡眠和用药情况，再向精神科医生或药师确认。"
+        )
+
+    if "unsupported_longitudinal_claim" in violations:
+        return (
+            "我目前没有足够的连续记录来判断你是否偏离了自己的长期状态。"
+            "我们可以先继续记录睡眠、情绪、精力和冲动变化；记录积累后，我会只依据可追溯的数据帮你复盘。"
         )
 
     if "harm_plan_elaboration" in violations:

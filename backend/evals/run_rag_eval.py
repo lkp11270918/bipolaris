@@ -17,6 +17,8 @@ class RagEvalResult:
     failures: list[str]
     top_result: dict[str, Any] | None
     results: list[dict[str, Any]]
+    relevant_rank: int | None = None
+    authority_a_hit: bool = False
 
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
@@ -39,6 +41,18 @@ def check_case(case: dict[str, Any], results: list[dict[str, Any]]) -> RagEvalRe
     expected_source = case.get("expected_source")
     expected_doc_type = case.get("expected_top_doc_type")
     expected_topic = case.get("expected_topic")
+    expected_doc_id = case.get("expected_doc_id")
+    relevant_rank = next(
+        (
+            rank
+            for rank, item in enumerate(results, start=1)
+            if (not expected_doc_id or item.get("doc_id") == expected_doc_id)
+            and (not expected_source or item.get("source") == expected_source)
+            and (not expected_doc_type or (item.get("metadata") or {}).get("doc_type") == expected_doc_type)
+            and (not expected_topic or (item.get("metadata") or {}).get("topic") == expected_topic)
+        ),
+        None,
+    )
 
     if expected_source and top.get("source") != expected_source:
         failures.append(f"top source expected {expected_source}, got {top.get('source')}")
@@ -59,6 +73,10 @@ def check_case(case: dict[str, Any], results: list[dict[str, Any]]) -> RagEvalRe
         failures=failures,
         top_result=top,
         results=results,
+        relevant_rank=relevant_rank,
+        authority_a_hit=any(
+            str((item.get("metadata") or {}).get("authority_level")) == "A" for item in results
+        ),
     )
 
 
@@ -80,6 +98,7 @@ def main() -> None:
             min_score=args.min_score,
             bd_state=case.get("bd_state"),
             risk_level=case.get("risk_level"),
+            medical_fact_required=bool(case.get("requires_authority_a")),
         )
         results.append(check_case(case, retrieved))
 
@@ -94,6 +113,8 @@ def main() -> None:
                         "failures": result.failures,
                         "top_result": result.top_result,
                         "results": result.results,
+                        "relevant_rank": result.relevant_rank,
+                        "authority_a_hit": result.authority_a_hit,
                     },
                     ensure_ascii=False,
                 )
@@ -101,6 +122,18 @@ def main() -> None:
             )
 
     passed = sum(1 for result in results if result.passed)
+    recall_at_k = sum(1 for result in results if result.relevant_rank is not None) / len(results) if results else 0
+    mrr = (
+        sum(1 / result.relevant_rank for result in results if result.relevant_rank is not None) / len(results)
+        if results
+        else 0
+    )
+    authority_required = [result for case, result in zip(cases, results) if case.get("requires_authority_a")]
+    authority_hit_rate = (
+        sum(1 for result in authority_required if result.authority_a_hit) / len(authority_required)
+        if authority_required
+        else 0
+    )
     print(
         json.dumps(
             {
@@ -108,6 +141,9 @@ def main() -> None:
                 "passed": passed,
                 "failed": len(results) - passed,
                 "pass_rate": round(passed / len(results), 4) if results else 0.0,
+                "recall_at_k": round(recall_at_k, 4),
+                "mrr": round(mrr, 4),
+                "authority_a_hit_rate": round(authority_hit_rate, 4),
                 "out": str(args.out),
             },
             ensure_ascii=False,

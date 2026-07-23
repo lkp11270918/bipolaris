@@ -22,6 +22,16 @@ def load_results(path: Path) -> list[dict[str, Any]]:
 
 
 def classify_failure(failure: str) -> str:
+    if failure.startswith("assessment "):
+        return "assessment_error"
+    if failure.startswith("strategy "):
+        return "strategy_error"
+    if failure.startswith("retrieval "):
+        return "retrieval_error"
+    if failure.startswith("longitudinal "):
+        return "longitudinal_error"
+    if failure.startswith("output guardrail "):
+        return "output_guardrail_error"
     if "risk_level" in failure:
         return "risk_misclassification"
     if "bd_state" in failure:

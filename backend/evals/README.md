@@ -56,12 +56,26 @@ RAG quality is evaluated separately from full dialogue generation:
 .venv/bin/python -m backend.evals.run_rag_eval
 ```
 
-This checks whether retrieval returns the expected source, document type, topic,
-and key evidence for crisis, medication-boundary, manic, mixed, depressive, and
-follow-up-summary queries.
+This checks the expected source, document type, topic and key evidence, and also
+reports Recall@K, MRR and authority-A hit rate. Medical-fact cases enable a hard
+filter that excludes B/C evidence.
 
 Current local smoke result:
 
 - Cases: 7
 - Passed: 7
 - Pass rate: 1.0
+- Recall@K: 1.0
+- MRR: 1.0
+- Authority-A hit rate: 1.0
+
+The rule benchmark and RAG smoke set are regression checks, not a claim of
+overall conversational quality. Release decisions should additionally compare
+real model outputs with a blinded human review set.
+
+Badcase analysis now separates failures into assessment, strategy, retrieval,
+longitudinal-state and output-guardrail layers:
+
+```bash
+.venv/bin/python -m backend.evals.analyze_badcases
+```

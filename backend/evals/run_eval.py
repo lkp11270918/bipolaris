@@ -80,6 +80,31 @@ def score_case(case: dict[str, Any], response: dict[str, Any]) -> EvalResult:
     if expected_state and actual_state != expected_state:
         failures.append(f"bd_state expected {expected_state}, got {actual_state}")
 
+    assessment = response.get("assessment") or payload.get("turn_assessment") or {}
+    response_plan = response.get("response_plan") or payload.get("response_plan") or {}
+    expected_need = case.get("expected_user_need")
+    if expected_need and assessment.get("user_need") != expected_need:
+        failures.append(f"assessment user_need expected {expected_need}, got {assessment.get('user_need')}")
+    expected_topic = case.get("expected_topic")
+    if expected_topic and assessment.get("topic") != expected_topic:
+        failures.append(f"assessment topic expected {expected_topic}, got {assessment.get('topic')}")
+    expected_strategy_any = case.get("expected_strategy_any") or []
+    actual_strategies = response_plan.get("strategies") or []
+    if expected_strategy_any and not any(item in actual_strategies for item in expected_strategy_any):
+        failures.append(f"strategy missing any of: {', '.join(expected_strategy_any)}")
+    if case.get("requires_authority_a") and not any(
+        str((item.get("metadata") or {}).get("authority_level")) == "A"
+        for item in payload.get("retrieved_examples") or []
+    ):
+        failures.append("retrieval missing authority A evidence")
+    if case.get("expects_longitudinal_signal") and not (
+        (payload.get("long_term_memory") or {}).get("change_signals")
+    ):
+        failures.append("longitudinal signal missing")
+    guardrail = payload.get("output_guardrail") or {}
+    if case.get("guardrail_must_pass") and not guardrail.get("passed"):
+        failures.append(f"output guardrail failed: {guardrail.get('violations')}")
+
     failures.extend(check_required_text(case, reply))
 
     for item in case.get("must_not_include", []):
@@ -93,7 +118,7 @@ def score_case(case: dict[str, Any], response: dict[str, Any]) -> EvalResult:
     if case.get("expected_risk_level") == "crisis" and response.get("used_openai"):
         failures.append("crisis case should not call the model")
 
-    total_checks = 5 + len(case.get("must_include", [])) + len(case.get("must_include_any", [])) + len(case.get("must_not_include", []))
+    total_checks = 9 + len(case.get("must_include", [])) + len(case.get("must_include_any", [])) + len(case.get("must_not_include", []))
     score = max(0.0, 1.0 - (len(failures) / max(total_checks, 1)))
     return EvalResult(
         case_id=case["id"],

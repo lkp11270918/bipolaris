@@ -40,9 +40,15 @@ LLM 风险语义分类 ── 失败/低置信度 ──→ 保守兜底
         ↓
 Unknown / Manic-Mixed 冲突处理
         ↓
-状态策略路由 + 本地 RAG
+3/7/30 天纵向状态模型（相对个人基线）
         ↓
-System Prompt + 正反 Few-shot
+结构化 TurnAssessment（风险、状态证据、用户需要、本轮主题）
+        ↓
+证据分级 RAG（A 权威 / B 支持策略 / C 语言理解）
+        ↓
+结构化 ResponsePlan（目标、策略、建议上限、必含/禁用项）
+        ↓
+System Prompt + 受约束的可信上下文
         ↓
 LLM 回复生成 / 模型失败 fallback
         ↓
@@ -89,6 +95,13 @@ curl http://127.0.0.1:8000/rag/status
 
 - `ESConv` 支持策略样例
 - `Kanakmi/mental-disorders` 中 `label=1` 的 bipolar 叙事样例
+- WHO、NICE、NHS 的短篇权威知识条目（仅保存释义、来源和版本 metadata）
+
+RAG 证据分级：
+
+- `A`：官方指南或官方患者教育材料，可用于医疗事实。
+- `B`：内部安全策略和情绪支持策略，只用于决定如何支持。
+- `C`：ESConv 与患者叙事，只用于理解表达和对话风格，不能支撑医疗结论。
 
 本地索引文件位置：
 
@@ -98,7 +111,7 @@ curl http://127.0.0.1:8000/rag/status
 当前默认业务参数：
 
 - `RAG_TOP_K=4`：每次最多注入 4 条检索样例。
-- `RAG_MIN_SCORE=0.32`：低于该相关度的样例不会进入 Context Payload。
+- `RAG_MIN_SCORE=0.32`：低于该相关度的材料不会进入检索结果。
 - `MAX_ADVICE_ITEMS=3`：普通和中风险回复尽量不超过 3 个行动建议。
 - `MAX_QUESTIONS_PER_REPLY=1`：每次最多一个追问，避免用户感到被盘问。
 - `MAX_OUTPUT_TOKENS=850`：保留足够空间让安全提示完整收尾。
@@ -112,11 +125,14 @@ curl http://127.0.0.1:8000/rag/status
 - 混合风险引擎：工程规则优先、LLM 语义分类、低置信度保守兜底。
 - Few-shot：覆盖平稳、低落、偏躁、混合、证据不足和即时危险，并包含错误反例。
 - 长上下文压缩：保留最近对话、较早主题摘要和独立安全事实。
+- 结构化生成管线：先输出可审计判断和响应计划，再让模型生成自然语言。
+- 纵向状态模型：按真实日期计算 3/7/30 天窗口，并保存可追溯的基线、差值和组合预警证据。
+- 证据分级：医疗事实必须命中 A 级来源，患者叙事不会被当作医学知识。
 - Prompt 防护：识别角色劫持与提示词索取，并拦截隐藏上下文泄露。
 - 危机资源：希望24热线 `400-161-9995`、急救电话 `120`、紧急联系人提醒。
 - 稳定工具：生活锚点、早期预警信号、5-4-3-2-1 感官稳定练习。
 - FastAPI 后端：`/chat`、`/safety-filter`、`/synthesize-context`。
-- OpenAI 后端 LLM：普通对话通过隐藏 Context Payload + 系统 prompt 调用 OpenAI Responses API。
+- OpenAI 后端 LLM：普通对话通过结构化判断、响应计划和受约束证据调用 OpenAI Responses API。
 - 本地 RAG：整合 mood state、sleep、energy、impulsivity、medication schedule、warning signs、dialogue history，以及从真实 `ESConv` / `bipolar` 语料检索出的样例。
 
 ## 数据集处理状态
