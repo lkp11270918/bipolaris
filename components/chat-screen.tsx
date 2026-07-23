@@ -1,18 +1,29 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Send, AlertTriangle, Phone, Loader2, ThumbsUp, ThumbsDown, ChevronRight } from "lucide-react"
+import { Send, Loader2, ThumbsUp, ThumbsDown, X } from "lucide-react"
 import type { CheckinData } from "./checkin-screen"
-import { requestChatReply, submitFeedback, trackEvent, type ChatHistoryMessage } from "@/lib/bipolaris-api"
-import { featuredCrisisResources, telHref } from "@/lib/crisis-resources"
+import {
+  requestChatReply,
+  getUserSettings,
+  getMoodLogs,
+  submitFeedback,
+  trackEvent,
+  type BackendRisk,
+  type ChatHistoryMessage,
+} from "@/lib/bipolaris-api"
+import { CrisisSupportMode } from "@/components/crisis-support-mode"
+import { buildPersonalTrendMessage, getRecordingEncouragement } from "@/lib/personal-insights"
 
 interface Message {
   id: string
   role: "user" | "assistant"
   content: string
-  risk?: "none" | "low" | "medium" | "crisis"
+  risk?: "none" | BackendRisk
   state?: string
   strategy?: string
+  ragSources?: string[]
+  usedOpenAI?: boolean
   timestamp: Date
 }
 
@@ -22,7 +33,10 @@ interface ChatScreenProps {
 
 // 危机关键词检测（演示用）
 function detectRisk(text: string): "none" | "low" | "medium" | "crisis" {
-  const crisisWords = ["自杀", "结束生命", "不想活", "去死", "自残", "割", "伤害自己", "药物过量"]
+  const crisisWords = [
+    "自杀", "结束生命", "不想活", "去死", "自残", "割腕", "伤害自己", "伤害他人",
+    "药物过量", "吞药", "跳楼", "跳下去", "楼顶", "天台", "铁轨", "刀在手里",
+  ]
   const mediumWords = ["崩溃", "受不了", "放弃", "消失", "很痛苦", "绝望"]
   const lowWords = ["难受", "低落", "焦虑", "担心", "睡不着"]
   const t = text.toLowerCase()
@@ -30,42 +44,6 @@ function detectRisk(text: string): "none" | "low" | "medium" | "crisis" {
   if (mediumWords.some((w) => t.includes(w))) return "medium"
   if (lowWords.some((w) => t.includes(w))) return "low"
   return "none"
-}
-
-function CrisisBanner() {
-  return (
-    <div className="mx-4 mb-3 bg-destructive/10 border border-destructive/30 rounded-2xl p-4">
-      <div className="flex items-start gap-3">
-        <AlertTriangle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
-        <div>
-          <p className="text-sm font-medium text-destructive mb-2">紧急支持</p>
-          <div className="space-y-1.5">
-            {featuredCrisisResources.map((resource) => (
-              <a
-                key={resource.id}
-                href={telHref(resource.phone)}
-                onClick={() => trackEvent("hotline_clicked", { hotline: resource.id, source: "crisis_banner" })}
-                className="flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded-xl px-3 py-2"
-              >
-                <Phone className="w-4 h-4" />
-                {resource.name} {resource.phone}
-              </a>
-            ))}
-            <a
-              href="/crisis-resources"
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => trackEvent("crisis_resources_opened", { source: "crisis_banner" })}
-              className="flex items-center justify-between gap-2 text-sm text-foreground bg-card border border-destructive/20 rounded-xl px-3 py-2"
-            >
-              查看更多危机资源
-              <ChevronRight className="w-4 h-4 text-muted-foreground" />
-            </a>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
 }
 
 function StateTag({ state }: { state: string }) {
@@ -89,6 +67,8 @@ function RiskBadge({ risk }: { risk: string }) {
   const config: Record<string, { label: string; cls: string }> = {
     low: { label: "低风险", cls: "bg-yellow-100 text-yellow-700" },
     medium: { label: "中风险", cls: "bg-orange-100 text-orange-700" },
+    high: { label: "高风险", cls: "bg-red-100 text-red-700" },
+    imminent: { label: "即时危险", cls: "bg-red-200 text-red-900" },
     crisis: { label: "危机", cls: "bg-red-100 text-red-700" },
   }
   const c = config[risk]
@@ -114,6 +94,7 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
   const [input, setInput] = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const [showCrisis, setShowCrisis] = useState(false)
+  const [feedbackMessage, setFeedbackMessage] = useState<Message | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -125,7 +106,7 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
     if (!trimmed || isTyping) return
 
     const risk = detectRisk(trimmed)
-    if (risk === "crisis") setShowCrisis(true)
+    if (["high", "imminent", "crisis"].includes(risk)) setShowCrisis(true)
 
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -141,21 +122,26 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
     try {
       const history: ChatHistoryMessage[] = [...messages, userMsg]
         .filter((msg) => msg.role === "user" || msg.role === "assistant")
-        .slice(-8)
+        .slice(-40)
         .map((msg) => ({ role: msg.role, content: msg.content }))
       const data = await requestChatReply(trimmed, checkinData, history)
-      if (data.risk_level === "crisis") setShowCrisis(true)
+      if (["high", "imminent", "crisis"].includes(data.risk_level)) setShowCrisis(true)
       const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: data.reply,
         risk: data.risk_level,
-        state: checkinData.state,
+        state: String(data.context_payload?.inferred_bd_state || checkinData.state),
         strategy: data.selected_strategy,
+        ragSources: ((data.context_payload?.retrieved_examples as Array<{ source?: string }> | undefined) || [])
+          .map((item) => item.source || "")
+          .filter(Boolean),
+        usedOpenAI: data.used_openai,
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, aiMsg])
     } catch {
+      if (risk === "crisis") setShowCrisis(true)
       trackEvent("chat_error", { stage: "request_chat_reply", local_risk: risk, checkin_state: checkinData.state })
       const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
@@ -185,6 +171,10 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
   }
 
   function handleFeedback(msg: Message, label: "helpful" | "not_helpful") {
+    if (label === "not_helpful") {
+      setFeedbackMessage(msg)
+      return
+    }
     void submitFeedback({
       messageId: msg.id,
       label,
@@ -193,6 +183,25 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
       bdState: msg.state,
       selectedStrategy: msg.strategy,
     })
+  }
+
+  function submitNegativeFeedback(label: "not_understood" | "too_generic" | "not_actionable" | "uncomfortable" | "unsafe") {
+    if (!feedbackMessage) return
+    const index = messages.findIndex((message) => message.id === feedbackMessage.id)
+    const previousUserMessage = [...messages.slice(0, index)].reverse().find((message) => message.role === "user")
+    void submitFeedback({
+      messageId: feedbackMessage.id,
+      label,
+      rating: label === "unsafe" ? 1 : 2,
+      riskLevel: feedbackMessage.risk,
+      bdState: feedbackMessage.state,
+      selectedStrategy: feedbackMessage.strategy,
+      userMessage: previousUserMessage?.content,
+      assistantReply: feedbackMessage.content,
+      ragSources: feedbackMessage.ragSources,
+      usedOpenAI: feedbackMessage.usedOpenAI,
+    })
+    setFeedbackMessage(null)
   }
 
   // 快捷话题
@@ -220,10 +229,19 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
       </div>
 
       {/* 消息列表 */}
+      {showCrisis ? (
+        <div className="flex-1 min-h-0">
+          <CrisisSupportMode
+            onReturnToChat={() => {
+              setShowCrisis(false)
+              trackEvent("crisis_mode_closed")
+            }}
+          />
+        </div>
+      ) : (
+      <>
       <div className="flex-1 overflow-y-auto py-4 space-y-1">
-        {showCrisis && <CrisisBanner />}
-
-        {messages.map((msg) => (
+        {messages.map((msg, index) => (
           <div key={msg.id} className={`px-4 ${msg.role === "user" ? "flex justify-end" : "flex justify-start"}`}>
             <div
               className={`max-w-[85%] ${
@@ -238,6 +256,11 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
                 </div>
               )}
               <p className="text-sm leading-relaxed whitespace-pre-line">{msg.content}</p>
+              {msg.role === "assistant" && isMedicationRelated(messages, index) && (
+                <div className="mt-3 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2">
+                  <p className="text-xs text-amber-800 leading-relaxed">用药决定请遵医嘱。不要自行停药、加减药或补服；不确定时请联系开药医生或药师。</p>
+                </div>
+              )}
               {msg.role === "assistant" && (
                 <div className="flex items-center justify-between mt-3 pt-2 border-t border-border/50">
                   <span className="text-xs text-muted-foreground">
@@ -245,12 +268,14 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
                   </span>
                   <div className="flex gap-1">
                     <button
+                      aria-label="这条回复有帮助"
                       onClick={() => handleFeedback(msg, "helpful")}
                       className="w-6 h-6 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                     >
                       <ThumbsUp className="w-3.5 h-3.5" />
                     </button>
                     <button
+                      aria-label="这条回复没有帮助"
                       onClick={() => handleFeedback(msg, "not_helpful")}
                       className="w-6 h-6 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                     >
@@ -292,8 +317,11 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
           </div>
         </div>
       )}
+      </>
+      )}
 
       {/* 输入框 */}
+      {!showCrisis && (
       <div className="px-4 pb-4 pt-2 bg-background border-t border-border">
         <div className="flex items-end gap-2 bg-card border border-border rounded-2xl px-4 py-2">
           <textarea
@@ -328,8 +356,39 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
           AI 不替代医疗 · 危机请拨 120 或 400-161-9995
         </p>
       </div>
+      )}
+
+      {feedbackMessage && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end" onClick={() => setFeedbackMessage(null)}>
+          <div className="w-full max-w-md mx-auto bg-card rounded-t-3xl p-6" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-lg font-semibold text-foreground">哪里没有帮到你？</h3>
+              <button aria-label="关闭" onClick={() => setFeedbackMessage(null)} className="w-8 h-8 flex items-center justify-center text-muted-foreground"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs text-muted-foreground mb-4">提交后，这一轮输入和回复会用于定位问题，不会公开展示。</p>
+            <div className="space-y-2">
+              {[
+                ["not_understood", "没有理解我的意思"],
+                ["too_generic", "回复太空泛"],
+                ["not_actionable", "建议对我没用"],
+                ["uncomfortable", "这让我感到不舒服"],
+                ["unsafe", "可能存在安全风险"],
+              ].map(([value, label]) => (
+                <button key={value} onClick={() => submitNegativeFeedback(value as Parameters<typeof submitNegativeFeedback>[0])} className="w-full py-3.5 px-4 rounded-2xl bg-background border border-border text-sm text-left text-foreground">{label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
+}
+
+function isMedicationRelated(messages: Message[], index: number): boolean {
+  const terms = ["用药", "服药", "漏服", "补服", "停药", "加药", "减药", "剂量", "药物", "副作用"]
+  const current = messages[index]?.content || ""
+  const previous = index > 0 && messages[index - 1]?.role === "user" ? messages[index - 1].content : ""
+  return terms.some((term) => current.includes(term) || previous.includes(term))
 }
 
 function getGreeting(data: CheckinData): string {
@@ -344,7 +403,21 @@ function getGreeting(data: CheckinData): string {
     unknown: `${greet}。很高兴你来找我，不管现在是什么心情，我都愿意听。\n\n今天有什么在你心里转？`,
   }
 
-  return stateGreets[data.state] || stateGreets.unknown
+  const settings = getUserSettings()
+  const logs = getMoodLogs()
+  const focus = settings.supportGoals.includes("followup")
+    ? "我也会帮你把值得复诊时说明的变化整理下来。"
+    : settings.supportGoals.includes("warning_signs")
+      ? "我会结合你的近期记录，留意和平时不同的变化。"
+      : ""
+  const stageFocus = settings.userStage === "newly_diagnosed"
+    ? "刚开始适应诊断和长期管理并不容易，我们一次只整理一个最重要的问题。"
+    : settings.userStage === "stable_management"
+      ? "状态平稳时留下自己的基线，也能帮助以后更早看见变化。"
+      : ""
+  const trend = buildPersonalTrendMessage(data, logs)
+  const encouragement = getRecordingEncouragement(logs)
+  return [stateGreets[data.state] || stateGreets.unknown, focus, stageFocus, trend, encouragement].filter(Boolean).join("\n\n")
 }
 
 function getSuggestions(data: CheckinData): string[] {
@@ -355,5 +428,18 @@ function getSuggestions(data: CheckinData): string[] {
     stable: ["我想记录一下今天的状态", "我最近有一些预警信号想确认", "我下周要复诊，想聊聊准备什么"],
     unknown: ["我今天感觉有点不对", "我想聊聊最近的睡眠", "我不知道从哪里开始说"],
   }
-  return base[data.state] || base.unknown
+  const settings = getUserSettings()
+  const goalSuggestion = settings.supportGoals.includes("followup")
+    ? "帮我看看最近有哪些变化值得复诊时说"
+    : settings.supportGoals.includes("warning_signs")
+      ? "帮我对比一下最近和平时有什么不同"
+      : settings.supportGoals.includes("impulse_control")
+        ? "我有个冲动决定，想先一起缓一缓"
+        : ""
+  const stageSuggestion = settings.userStage === "newly_diagnosed"
+    ? "我刚确诊，不知道该怎么适应"
+    : settings.userStage === "stable_management"
+      ? "帮我整理一份自己的稳定基线"
+      : ""
+  return Array.from(new Set([goalSuggestion, stageSuggestion, ...(base[data.state] || base.unknown)].filter(Boolean))).slice(0, 3)
 }

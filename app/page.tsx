@@ -7,7 +7,16 @@ import { CheckinScreen, type CheckinData } from "@/components/checkin-screen"
 import { ChatScreen } from "@/components/chat-screen"
 import { ReportScreen } from "@/components/report-screen"
 import { SettingsScreen } from "@/components/settings-screen"
-import { saveMoodLog, trackEvent } from "@/lib/bipolaris-api"
+import {
+  getMoodLogs,
+  getUserSettings,
+  isOnboardingComplete,
+  markOnboardingComplete,
+  saveMoodLog,
+  saveUserSettings,
+  trackEvent,
+} from "@/lib/bipolaris-api"
+import { notifySleepSignalIfNeeded, startReminderScheduler } from "@/lib/reminders"
 
 type AppPhase = "welcome" | "checkin" | "main"
 type MainTab = "chat" | "report" | "settings"
@@ -24,19 +33,32 @@ const defaultCheckin: CheckinData = {
 
 export default function Page() {
   const [phase, setPhase] = useState<AppPhase>("welcome")
+  const [initialized, setInitialized] = useState(false)
+  const [quickCheckin, setQuickCheckin] = useState(false)
   const [activeTab, setActiveTab] = useState<MainTab>("chat")
   const [checkinData, setCheckinData] = useState<CheckinData>(defaultCheckin)
 
   useEffect(() => {
     trackEvent("app_opened")
+    const completed = isOnboardingComplete()
+    setQuickCheckin(completed && getMoodLogs().length > 0)
+    setPhase(completed ? "checkin" : "welcome")
+    setInitialized(true)
+    return startReminderScheduler()
   }, [])
+
+  if (!initialized) return <div className="h-[100dvh] bg-background" />
 
   if (phase === "welcome") {
     return (
       <div className="max-w-md mx-auto" style={{ height: "100dvh" }}>
         <WelcomeScreen
-          onComplete={() => {
+          onComplete={({ supportGoals, userStage }) => {
+            saveUserSettings({ ...getUserSettings(), supportGoals, userStage })
+            markOnboardingComplete()
             trackEvent("privacy_notice_confirmed")
+            trackEvent("onboarding_goals_saved", { support_goals: supportGoals, user_stage: userStage })
+            setQuickCheckin(false)
             setPhase("checkin")
           }}
         />
@@ -48,6 +70,7 @@ export default function Page() {
     return (
       <div className="max-w-md mx-auto" style={{ height: "100dvh" }}>
         <CheckinScreen
+          quick={quickCheckin}
           onComplete={(data) => {
             setCheckinData(data)
             trackEvent("checkin_completed", {
@@ -60,10 +83,14 @@ export default function Page() {
               skipped: data.mood <= 0,
               has_notes: Boolean(data.notes),
             })
-            if (data.mood > 0) saveMoodLog(data)
+            if (data.mood > 0) {
+              saveMoodLog(data)
+              notifySleepSignalIfNeeded(data)
+            }
             trackEvent("chat_started", { source: "checkin_complete", state: data.state })
             setPhase("main")
           }}
+          onUseFullCheckin={() => setQuickCheckin(false)}
         />
       </div>
     )

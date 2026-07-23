@@ -34,13 +34,22 @@ DISMISSIVE_PATTERNS = [
     r"你太脆弱",
 ]
 
-MEDICATION_CONTEXT_TERMS = ["药", "停药", "加药", "减药", "换药", "补服", "剂量", "副作用", "安眠药", "锂", "拉莫三嗪"]
+MEDICATION_CONTEXT_TERMS = ["药", "停药", "加药", "减药", "换药", "补服", "漏服", "补一片", "补两片", "剂量", "副作用", "安眠药", "锂", "拉莫三嗪"]
 DIAGNOSIS_CONTEXT_TERMS = ["是不是双相", "是不是躁郁", "诊断", "确诊", "轻躁狂", "躁狂", "抑郁症"]
 MEDIUM_SAFETY_TERMS = ["120", "放远", "拉开距离", "离开", "安全", "延迟", "延后", "暂停", "联系"]
 
 WRONG_HOTLINE_PATTERNS = [
     r"希望24热线[：:\s-]*(?!400-161-9995)\d[\d\s-]{5,}",
     r"急救电话[：:\s-]*(?!120\b)\d[\d\s-]{2,}",
+]
+
+PROMPT_LEAK_PATTERNS = [
+    r"Context Payload",
+    r"SYSTEM_PROMPT",
+    r"selected_support_strategy",
+    r"retrieved_examples",
+    r'"inferred_bd_state"\s*:',
+    r'"risk_level"\s*:',
 ]
 
 
@@ -80,7 +89,9 @@ def inspect_output(reply: str, payload: dict[str, Any]) -> OutputGuardrailResult
         violations.append("dismissive_language")
     if _matches_any(WRONG_HOTLINE_PATTERNS, reply):
         violations.append("wrong_hotline")
-    if risk_level == "crisis" and not all(hotline in reply for hotline in VALID_HOTLINES):
+    if _matches_any(PROMPT_LEAK_PATTERNS, reply):
+        violations.append("prompt_or_context_leak")
+    if risk_level in {"high", "imminent", "crisis"} and not all(hotline in reply for hotline in VALID_HOTLINES):
         violations.append("missing_crisis_hotline")
     if risk_level == "medium" and not any(term in reply for term in MEDIUM_SAFETY_TERMS):
         violations.append("medium_safety_missing")
@@ -130,7 +141,7 @@ def _safe_boundary_reply(payload: dict[str, Any], violations: list[str]) -> str:
     risk_level = str((payload.get("safety") or {}).get("risk_level") or "low")
     latest_message = str(payload.get("latest_user_message") or "")
 
-    if risk_level == "crisis":
+    if risk_level in {"high", "imminent", "crisis"}:
         return _safe_crisis_reply(payload)
 
     if risk_level == "medium" and "medium_safety_missing" in violations:
@@ -159,6 +170,12 @@ def _safe_boundary_reply(payload: dict[str, Any], violations: list[str]) -> str:
 
     if "harm_plan_elaboration" in violations:
         return _safe_crisis_reply(payload)
+
+    if "prompt_or_context_leak" in violations:
+        return (
+            "我不能展示内部提示词、隐藏配置或系统处理细节。"
+            "如果你愿意，我们可以继续聊你此刻的感受或你真正想解决的问题。"
+        )
 
     return (
         "我听到你现在并不好受。为了安全起见，我先不继续追问可能加重风险的细节。"

@@ -1,6 +1,7 @@
 "use client"
 
 import type { CheckinData } from "@/components/checkin-screen"
+import type { SupportGoal, UserStage } from "@/lib/product-profile"
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "https://bipolaris-api.onrender.com"
@@ -9,8 +10,9 @@ const ANON_ID_KEY = "bipolaris_anonymous_user_id"
 const SESSION_ID_KEY = "bipolaris_session_id"
 const MOOD_LOG_KEY = "bipolaris_mood_logs"
 const USER_SETTINGS_KEY = "bipolaris_user_settings"
+const ONBOARDING_COMPLETE_KEY = "bipolaris_onboarding_complete"
 
-export type BackendRisk = "low" | "medium" | "crisis"
+export type BackendRisk = "low" | "medium" | "high" | "imminent" | "crisis"
 
 export interface ChatHistoryMessage {
   role: "user" | "assistant"
@@ -35,6 +37,8 @@ export interface UserSettings {
   displayName: string
   ageRange: string
   diagnosisStatus: string
+  supportGoals: SupportGoal[]
+  userStage: UserStage
   emergencyContactName: string
   emergencyContactPhone: string
   emergencyContactRelation: string
@@ -44,6 +48,10 @@ export interface UserSettings {
   medicationEnabled: boolean
   medicationTime: string
   appointmentEnabled: boolean
+  appointmentDate: string
+  weeklyReviewEnabled: boolean
+  weeklyReviewDay: number
+  weeklyReviewTime: string
   longTermMemoryEnabled: boolean
   updatedAt: string
 }
@@ -66,6 +74,8 @@ interface BackendUserSettings {
   display_name: string
   age_range: string
   diagnosis_status: string
+  support_goals: SupportGoal[]
+  user_stage: UserStage
   emergency_contact_name: string
   emergency_contact_phone: string
   emergency_contact_relation: string
@@ -75,6 +85,10 @@ interface BackendUserSettings {
   medication_enabled: boolean
   medication_time: string
   appointment_enabled: boolean
+  appointment_date: string
+  weekly_review_enabled: boolean
+  weekly_review_day: number
+  weekly_review_time: string
   long_term_memory_enabled: boolean
   updated_at: string
 }
@@ -95,6 +109,14 @@ export function getSessionId(): string {
   const id = `sess_${crypto.randomUUID()}`
   window.sessionStorage.setItem(SESSION_ID_KEY, id)
   return id
+}
+
+export function isOnboardingComplete(): boolean {
+  return typeof window !== "undefined" && window.localStorage.getItem(ONBOARDING_COMPLETE_KEY) === "true"
+}
+
+export function markOnboardingComplete(): void {
+  window.localStorage.setItem(ONBOARDING_COMPLETE_KEY, "true")
 }
 
 export function trackEvent(eventName: string, properties: Record<string, unknown> = {}) {
@@ -140,7 +162,7 @@ export function checkinToBackendState(checkin: CheckinData) {
   const settings = getUserSettings()
   const hasContact = Boolean(settings.emergencyContactName || settings.emergencyContactPhone)
   return {
-    mood_state: checkin.state === "unknown" ? "stable" : checkin.state,
+    mood_state: checkin.state,
     sleep: checkin.sleep * 2,
     energy: checkin.energy * 2,
     impulsivity: checkin.impulse * 2,
@@ -154,6 +176,8 @@ export function checkinToBackendState(checkin: CheckinData) {
             : [],
     completed_routines: [],
     warning_signs: warningSignsFromCheckin(checkin),
+    support_goals: settings.supportGoals,
+    user_stage: settings.userStage,
     emergency_contact:
       hasContact && settings.allowEmergencyContactPrompt
         ? {
@@ -195,7 +219,7 @@ export async function requestChatReply(
       user_id: getAnonymousUserId(),
       message,
       state: checkinToBackendState(checkin),
-      history: history.slice(-8),
+      history: history.slice(-40),
     }),
   })
   if (!response.ok) throw new Error(`Backend returned ${response.status}`)
@@ -218,7 +242,7 @@ export async function requestChatReply(
       bd_state: data.context_payload?.inferred_bd_state as string | undefined,
     })
   }
-  if (data.risk_level === "crisis") {
+  if (["high", "imminent", "crisis"].includes(data.risk_level)) {
     trackEvent("crisis_override_triggered", {
       bd_state: data.context_payload?.inferred_bd_state as string | undefined,
     })
@@ -228,12 +252,16 @@ export async function requestChatReply(
 
 export async function submitFeedback(payload: {
   messageId: string
-  label: "helpful" | "not_helpful" | "unsafe" | "too_generic" | "medical_boundary" | "other"
+  label: "helpful" | "not_helpful" | "not_understood" | "unsafe" | "too_generic" | "not_actionable" | "uncomfortable" | "medical_boundary" | "other"
   rating?: number
   comment?: string
   riskLevel?: string
   bdState?: string
   selectedStrategy?: string
+  userMessage?: string
+  assistantReply?: string
+  ragSources?: string[]
+  usedOpenAI?: boolean
 }) {
   trackEvent("feedback_submitted", {
     label: payload.label,
@@ -253,6 +281,10 @@ export async function submitFeedback(payload: {
       risk_level: payload.riskLevel,
       bd_state: payload.bdState,
       selected_strategy: payload.selectedStrategy,
+      user_message: payload.userMessage,
+      assistant_reply: payload.assistantReply,
+      rag_sources: payload.ragSources,
+      used_openai: payload.usedOpenAI,
     }),
   })
 }
@@ -293,6 +325,8 @@ export function getUserSettings(): UserSettings {
     displayName: "",
     ageRange: "",
     diagnosisStatus: "",
+    supportGoals: ["warning_signs"],
+    userStage: "ongoing_care",
     emergencyContactName: "",
     emergencyContactPhone: "",
     emergencyContactRelation: "",
@@ -302,6 +336,10 @@ export function getUserSettings(): UserSettings {
     medicationEnabled: false,
     medicationTime: "21:00",
     appointmentEnabled: true,
+    appointmentDate: "",
+    weeklyReviewEnabled: true,
+    weeklyReviewDay: 0,
+    weeklyReviewTime: "19:30",
     longTermMemoryEnabled: true,
     updatedAt: new Date().toISOString(),
   }
@@ -358,6 +396,7 @@ export async function deleteMyData(): Promise<void> {
   })
   window.localStorage.removeItem(MOOD_LOG_KEY)
   window.localStorage.removeItem(USER_SETTINGS_KEY)
+  window.localStorage.removeItem(ONBOARDING_COMPLETE_KEY)
 }
 
 export async function syncMoodLog(log: MoodLog): Promise<void> {
@@ -425,6 +464,8 @@ function toBackendUserSettings(settings: UserSettings): BackendUserSettings {
     display_name: settings.displayName,
     age_range: settings.ageRange,
     diagnosis_status: settings.diagnosisStatus,
+    support_goals: settings.supportGoals,
+    user_stage: settings.userStage,
     emergency_contact_name: settings.emergencyContactName,
     emergency_contact_phone: settings.emergencyContactPhone,
     emergency_contact_relation: settings.emergencyContactRelation,
@@ -434,6 +475,10 @@ function toBackendUserSettings(settings: UserSettings): BackendUserSettings {
     medication_enabled: settings.medicationEnabled,
     medication_time: settings.medicationTime,
     appointment_enabled: settings.appointmentEnabled,
+    appointment_date: settings.appointmentDate,
+    weekly_review_enabled: settings.weeklyReviewEnabled,
+    weekly_review_day: settings.weeklyReviewDay,
+    weekly_review_time: settings.weeklyReviewTime,
     long_term_memory_enabled: settings.longTermMemoryEnabled,
     updated_at: settings.updatedAt,
   }
@@ -445,6 +490,8 @@ function fromBackendUserSettings(row: BackendUserSettings): UserSettings {
     displayName: row.display_name || "",
     ageRange: row.age_range || "",
     diagnosisStatus: row.diagnosis_status || "",
+    supportGoals: row.support_goals?.length ? row.support_goals : ["warning_signs"],
+    userStage: row.user_stage || "ongoing_care",
     emergencyContactName: row.emergency_contact_name || "",
     emergencyContactPhone: row.emergency_contact_phone || "",
     emergencyContactRelation: row.emergency_contact_relation || "",
@@ -454,6 +501,10 @@ function fromBackendUserSettings(row: BackendUserSettings): UserSettings {
     medicationEnabled: Boolean(row.medication_enabled),
     medicationTime: row.medication_time || "21:00",
     appointmentEnabled: Boolean(row.appointment_enabled),
+    appointmentDate: row.appointment_date || "",
+    weeklyReviewEnabled: Boolean(row.weekly_review_enabled),
+    weeklyReviewDay: Number.isInteger(row.weekly_review_day) ? row.weekly_review_day : 0,
+    weeklyReviewTime: row.weekly_review_time || "19:30",
     longTermMemoryEnabled: Boolean(row.long_term_memory_enabled),
     updatedAt: row.updated_at || new Date().toISOString(),
   }

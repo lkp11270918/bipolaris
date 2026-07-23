@@ -1,15 +1,84 @@
 "use client"
 
 import { useState } from "react"
-import { ChevronRight, Shield, Heart, BookOpen } from "lucide-react"
+import { ChevronRight, Shield, Heart, BookOpen, Target } from "lucide-react"
+import {
+  supportGoalOptions,
+  userStageOptions,
+  type SupportGoal,
+  type UserStage,
+} from "@/lib/product-profile"
 
 interface WelcomeScreenProps {
-  onComplete: () => void
+  onComplete: (profile: { supportGoals: SupportGoal[]; userStage: UserStage }) => void
 }
 
 export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
-  const [step, setStep] = useState<"intro" | "disclaimer">("intro")
+  const [step, setStep] = useState<"intro" | "disclaimer" | "goals">("intro")
   const [agreed, setAgreed] = useState(false)
+  const [supportGoals, setSupportGoals] = useState<SupportGoal[]>(["warning_signs"])
+  const [userStage, setUserStage] = useState<UserStage>("ongoing_care")
+
+  if (step === "goals") {
+    return (
+      <div className="h-full bg-background flex flex-col">
+        <div className="flex-1 overflow-y-auto px-6 pt-12 pb-6">
+          <div className="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+            <Target className="w-5 h-5 text-primary" />
+          </div>
+          <h1 className="text-2xl font-semibold text-foreground mb-2">你希望我重点帮你什么？</h1>
+          <p className="text-sm text-muted-foreground mb-6">最多选择 2 项，之后可以在设置中修改。</p>
+
+          <div className="space-y-2 mb-7">
+            {supportGoalOptions.map((goal) => {
+              const selected = supportGoals.includes(goal.value)
+              return (
+                <button
+                  key={goal.value}
+                  type="button"
+                  onClick={() => {
+                    setSupportGoals((current) =>
+                      selected
+                        ? current.filter((item) => item !== goal.value)
+                        : current.length < 2
+                          ? [...current, goal.value]
+                          : [current[1], goal.value],
+                    )
+                  }}
+                  className={`w-full text-left p-4 rounded-2xl border-2 transition-colors ${
+                    selected ? "border-primary bg-accent" : "border-border bg-card"
+                  }`}
+                >
+                  <p className="text-sm font-medium text-foreground">{goal.label}</p>
+                  <p className="text-xs text-muted-foreground mt-1">{goal.description}</p>
+                </button>
+              )
+            })}
+          </div>
+
+          <label className="block text-sm font-medium text-foreground mb-2">你现在更接近哪种情况？</label>
+          <select
+            value={userStage}
+            onChange={(event) => setUserStage(event.target.value as UserStage)}
+            className="w-full bg-card border border-border rounded-2xl px-4 py-3.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+          >
+            {userStageOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="px-6 pb-8 pt-2">
+          <button
+            onClick={() => onComplete({ supportGoals, userStage })}
+            disabled={supportGoals.length === 0}
+            className="w-full py-4 rounded-2xl text-base font-medium bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground"
+          >
+            继续完成首次签到
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (step === "disclaimer") {
     return (
@@ -85,7 +154,7 @@ export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
 
         <div className="px-6 pb-8 pt-2">
           <button
-            onClick={() => agreed && onComplete()}
+            onClick={() => agreed && setStep("goals")}
             disabled={!agreed}
             className={`w-full py-4 rounded-2xl text-base font-medium transition-all ${
               agreed
@@ -123,6 +192,9 @@ export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
               专为双相情感障碍设计的
               <br />
               AI 情绪陪伴助手
+            </p>
+            <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
+              第一阶段主要服务于已确诊、正在规律复诊，希望持续记录状态的成年人。
             </p>
           </div>
 

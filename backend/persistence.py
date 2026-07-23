@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
+import json
 
 from .crypto import decrypt_text, encrypt_text
 from .settings import APP_DB_PATH, DATABASE_URL
@@ -34,6 +35,8 @@ USER_SETTINGS_COLUMNS = [
     "display_name",
     "age_range",
     "diagnosis_status",
+    "support_goals",
+    "user_stage",
     "emergency_contact_name",
     "emergency_contact_phone",
     "emergency_contact_relation",
@@ -43,6 +46,10 @@ USER_SETTINGS_COLUMNS = [
     "medication_enabled",
     "medication_time",
     "appointment_enabled",
+    "appointment_date",
+    "weekly_review_enabled",
+    "weekly_review_day",
+    "weekly_review_time",
     "long_term_memory_enabled",
     "updated_at",
 ]
@@ -126,6 +133,8 @@ def ensure_app_schema() -> None:
                     display_name TEXT NOT NULL DEFAULT '',
                     age_range TEXT NOT NULL DEFAULT '',
                     diagnosis_status TEXT NOT NULL DEFAULT '',
+                    support_goals TEXT NOT NULL DEFAULT '["warning_signs"]',
+                    user_stage TEXT NOT NULL DEFAULT 'ongoing_care',
                     emergency_contact_name TEXT NOT NULL DEFAULT '',
                     emergency_contact_phone TEXT NOT NULL DEFAULT '',
                     emergency_contact_relation TEXT NOT NULL DEFAULT '',
@@ -135,11 +144,21 @@ def ensure_app_schema() -> None:
                     medication_enabled BOOLEAN NOT NULL DEFAULT FALSE,
                     medication_time TEXT NOT NULL DEFAULT '21:00',
                     appointment_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    appointment_date TEXT NOT NULL DEFAULT '',
+                    weekly_review_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    weekly_review_day INTEGER NOT NULL DEFAULT 0,
+                    weekly_review_time TEXT NOT NULL DEFAULT '19:30',
                     long_term_memory_enabled BOOLEAN NOT NULL DEFAULT TRUE,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS support_goals TEXT NOT NULL DEFAULT '[\"warning_signs\"]'")
+            conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS user_stage TEXT NOT NULL DEFAULT 'ongoing_care'")
+            conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS appointment_date TEXT NOT NULL DEFAULT ''")
+            conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS weekly_review_enabled BOOLEAN NOT NULL DEFAULT TRUE")
+            conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS weekly_review_day INTEGER NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS weekly_review_time TEXT NOT NULL DEFAULT '19:30'")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS event_logs (
@@ -183,6 +202,8 @@ def ensure_app_schema() -> None:
                 display_name TEXT NOT NULL DEFAULT '',
                 age_range TEXT NOT NULL DEFAULT '',
                 diagnosis_status TEXT NOT NULL DEFAULT '',
+                support_goals TEXT NOT NULL DEFAULT '["warning_signs"]',
+                user_stage TEXT NOT NULL DEFAULT 'ongoing_care',
                 emergency_contact_name TEXT NOT NULL DEFAULT '',
                 emergency_contact_phone TEXT NOT NULL DEFAULT '',
                 emergency_contact_relation TEXT NOT NULL DEFAULT '',
@@ -192,11 +213,27 @@ def ensure_app_schema() -> None:
                 medication_enabled INTEGER NOT NULL DEFAULT 0,
                 medication_time TEXT NOT NULL DEFAULT '21:00',
                 appointment_enabled INTEGER NOT NULL DEFAULT 1,
+                appointment_date TEXT NOT NULL DEFAULT '',
+                weekly_review_enabled INTEGER NOT NULL DEFAULT 1,
+                weekly_review_day INTEGER NOT NULL DEFAULT 0,
+                weekly_review_time TEXT NOT NULL DEFAULT '19:30',
                 long_term_memory_enabled INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(user_settings)").fetchall()}
+        migrations = {
+            "support_goals": "TEXT NOT NULL DEFAULT '[\"warning_signs\"]'",
+            "user_stage": "TEXT NOT NULL DEFAULT 'ongoing_care'",
+            "appointment_date": "TEXT NOT NULL DEFAULT ''",
+            "weekly_review_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "weekly_review_day": "INTEGER NOT NULL DEFAULT 0",
+            "weekly_review_time": "TEXT NOT NULL DEFAULT '19:30'",
+        }
+        for column, definition in migrations.items():
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE user_settings ADD COLUMN {column} {definition}")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS event_logs (
@@ -299,27 +336,33 @@ def list_mood_logs(user_id: str, limit: int = 30) -> list[dict[str, Any]]:
 
 def save_user_settings(row: dict[str, Any]) -> dict[str, Any]:
     ensure_app_schema()
-    values = encrypt_columns({key: row.get(key) for key in USER_SETTINGS_COLUMNS}, USER_SETTINGS_ENCRYPTED_COLUMNS)
+    normalized = {key: row.get(key) for key in USER_SETTINGS_COLUMNS}
+    normalized["support_goals"] = json.dumps(normalized.get("support_goals") or ["warning_signs"], ensure_ascii=False)
+    values = encrypt_columns(normalized, USER_SETTINGS_ENCRYPTED_COLUMNS)
     if use_postgres():
         with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
             conn.execute(
                 """
                 INSERT INTO user_settings (
-                    user_id, display_name, age_range, diagnosis_status,
+                    user_id, display_name, age_range, diagnosis_status, support_goals, user_stage,
                     emergency_contact_name, emergency_contact_phone, emergency_contact_relation,
                     allow_emergency_contact_prompt, daily_checkin_enabled, daily_checkin_time,
-                    medication_enabled, medication_time, appointment_enabled, long_term_memory_enabled, updated_at
+                    medication_enabled, medication_time, appointment_enabled, appointment_date,
+                    weekly_review_enabled, weekly_review_day, weekly_review_time, long_term_memory_enabled, updated_at
                 ) VALUES (
-                    %(user_id)s, %(display_name)s, %(age_range)s, %(diagnosis_status)s,
+                    %(user_id)s, %(display_name)s, %(age_range)s, %(diagnosis_status)s, %(support_goals)s, %(user_stage)s,
                     %(emergency_contact_name)s, %(emergency_contact_phone)s, %(emergency_contact_relation)s,
                     %(allow_emergency_contact_prompt)s, %(daily_checkin_enabled)s, %(daily_checkin_time)s,
-                    %(medication_enabled)s, %(medication_time)s, %(appointment_enabled)s, %(long_term_memory_enabled)s,
+                    %(medication_enabled)s, %(medication_time)s, %(appointment_enabled)s, %(appointment_date)s,
+                    %(weekly_review_enabled)s, %(weekly_review_day)s, %(weekly_review_time)s, %(long_term_memory_enabled)s,
                     %(updated_at)s
                 )
                 ON CONFLICT (user_id) DO UPDATE SET
                     display_name = EXCLUDED.display_name,
                     age_range = EXCLUDED.age_range,
                     diagnosis_status = EXCLUDED.diagnosis_status,
+                    support_goals = EXCLUDED.support_goals,
+                    user_stage = EXCLUDED.user_stage,
                     emergency_contact_name = EXCLUDED.emergency_contact_name,
                     emergency_contact_phone = EXCLUDED.emergency_contact_phone,
                     emergency_contact_relation = EXCLUDED.emergency_contact_relation,
@@ -329,32 +372,42 @@ def save_user_settings(row: dict[str, Any]) -> dict[str, Any]:
                     medication_enabled = EXCLUDED.medication_enabled,
                     medication_time = EXCLUDED.medication_time,
                     appointment_enabled = EXCLUDED.appointment_enabled,
+                    appointment_date = EXCLUDED.appointment_date,
+                    weekly_review_enabled = EXCLUDED.weekly_review_enabled,
+                    weekly_review_day = EXCLUDED.weekly_review_day,
+                    weekly_review_time = EXCLUDED.weekly_review_time,
                     long_term_memory_enabled = EXCLUDED.long_term_memory_enabled,
                     updated_at = EXCLUDED.updated_at
                 """
                 ,
                 values,
             )
-        return decrypt_columns(values, USER_SETTINGS_ENCRYPTED_COLUMNS)
+        result = decrypt_columns(values, USER_SETTINGS_ENCRYPTED_COLUMNS)
+        result["support_goals"] = json.loads(result["support_goals"])
+        return result
 
     with sqlite_connection() as conn:
         conn.execute(
             """
             INSERT INTO user_settings (
-                user_id, display_name, age_range, diagnosis_status,
+                user_id, display_name, age_range, diagnosis_status, support_goals, user_stage,
                 emergency_contact_name, emergency_contact_phone, emergency_contact_relation,
                 allow_emergency_contact_prompt, daily_checkin_enabled, daily_checkin_time,
-                medication_enabled, medication_time, appointment_enabled, long_term_memory_enabled, updated_at
+                medication_enabled, medication_time, appointment_enabled, appointment_date,
+                weekly_review_enabled, weekly_review_day, weekly_review_time, long_term_memory_enabled, updated_at
             ) VALUES (
-                :user_id, :display_name, :age_range, :diagnosis_status,
+                :user_id, :display_name, :age_range, :diagnosis_status, :support_goals, :user_stage,
                 :emergency_contact_name, :emergency_contact_phone, :emergency_contact_relation,
                 :allow_emergency_contact_prompt, :daily_checkin_enabled, :daily_checkin_time,
-                :medication_enabled, :medication_time, :appointment_enabled, :long_term_memory_enabled, :updated_at
+                :medication_enabled, :medication_time, :appointment_enabled, :appointment_date,
+                :weekly_review_enabled, :weekly_review_day, :weekly_review_time, :long_term_memory_enabled, :updated_at
             )
             ON CONFLICT(user_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 age_range = excluded.age_range,
                 diagnosis_status = excluded.diagnosis_status,
+                support_goals = excluded.support_goals,
+                user_stage = excluded.user_stage,
                 emergency_contact_name = excluded.emergency_contact_name,
                 emergency_contact_phone = excluded.emergency_contact_phone,
                 emergency_contact_relation = excluded.emergency_contact_relation,
@@ -364,12 +417,18 @@ def save_user_settings(row: dict[str, Any]) -> dict[str, Any]:
                 medication_enabled = excluded.medication_enabled,
                 medication_time = excluded.medication_time,
                 appointment_enabled = excluded.appointment_enabled,
+                appointment_date = excluded.appointment_date,
+                weekly_review_enabled = excluded.weekly_review_enabled,
+                weekly_review_day = excluded.weekly_review_day,
+                weekly_review_time = excluded.weekly_review_time,
                 long_term_memory_enabled = excluded.long_term_memory_enabled,
                 updated_at = excluded.updated_at
             """,
             values,
         )
-    return decrypt_columns(values, USER_SETTINGS_ENCRYPTED_COLUMNS)
+    result = decrypt_columns(values, USER_SETTINGS_ENCRYPTED_COLUMNS)
+    result["support_goals"] = json.loads(result["support_goals"])
+    return result
 
 
 def get_user_settings(user_id: str) -> dict[str, Any] | None:
@@ -380,11 +439,17 @@ def get_user_settings(user_id: str) -> dict[str, Any] | None:
                 "SELECT * FROM user_settings WHERE user_id = %s",
                 (user_id,),
             ).fetchone()
-        return decrypt_columns(dict(row), USER_SETTINGS_ENCRYPTED_COLUMNS) if row else None
+        result = decrypt_columns(dict(row), USER_SETTINGS_ENCRYPTED_COLUMNS) if row else None
+        if result:
+            result["support_goals"] = json.loads(result.get("support_goals") or "[]")
+        return result
 
     with sqlite_connection() as conn:
         row = conn.execute("SELECT * FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
-    return decrypt_columns(dict(row), USER_SETTINGS_ENCRYPTED_COLUMNS) if row else None
+    result = decrypt_columns(dict(row), USER_SETTINGS_ENCRYPTED_COLUMNS) if row else None
+    if result:
+        result["support_goals"] = json.loads(result.get("support_goals") or "[]")
+    return result
 
 
 def delete_user_data(user_id: str) -> None:

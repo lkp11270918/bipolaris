@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
+from .classification import classify_risk_semantically, classify_state_semantically
+from .crypto import encrypt_text
 from .output_guardrails import apply_output_guardrail
 from .persistence import (
     delete_user_data,
@@ -45,8 +47,8 @@ except ImportError:  # pragma: no cover - exercised when dependencies are missin
     OpenAI = None  # type: ignore[assignment]
 
 
-BDState = Literal["stable", "manic", "depressed", "mixed"]
-RiskLevel = Literal["low", "medium", "crisis"]
+BDState = Literal["stable", "manic", "depressed", "mixed", "unknown"]
+RiskLevel = Literal["low", "medium", "high", "imminent", "crisis"]
 
 
 CRISIS_PATTERNS = [
@@ -57,16 +59,39 @@ CRISIS_PATTERNS = [
     r"喝死|喝到死|吸毒|嗑药|滥用药",
 ]
 
+IMMINENT_PATTERNS = [
+    r"(现在|马上|立刻).{0,12}(跳|割|吞|撞|杀|自杀|轻生)",
+    r"(楼顶|天台|桥上|铁轨|窗边).{0,20}(跳|死|结束|不想活)",
+    r"已经.{0,10}(吞|吃|服).{0,8}(很多|过量|一整瓶|一把)(药|片)",
+    r"(刀|绳|药).{0,12}(就在|手里|准备好了|已经拿好)",
+    r"(已经|马上).{0,8}(拿好|拿着|握着).{0,6}(刀|绳|药)",
+]
+
 ELEVATED_RISK_PATTERNS = [
     r"想砸东西|砸东西|快失控|要失控|控制不住",
+    r"(太|特别|越来越|快要|已经).{0,4}(崩溃|撑不住|受不了)|(崩溃|撑不住|受不了).{0,6}(怎么办|无法|不行了)",
     r"冲动.*(花钱|消费|开车|辞职|分手|吵架|冒险)",
-    r"连续.*(不睡|没睡)|几天.*(不睡|没睡)|睡得很少.*停不下来",
+    r"(很想|准备|打算).{0,8}(开快车|飙车|危险驾驶|冒险)",
+    r"(冒险|高风险).{0,8}(决定|行动|计划)",
+    r"连续.*(不睡|没睡)|(几天|两天|三天|\d+天).*(不睡|没睡)|睡得很少.*停不下来",
 ]
 
 MANIC_TERMS = ["睡不着", "不需要睡", "精力很高", "停不下来", "脑子很快", "话很多", "冲动", "花钱", "冒险", "烦躁", "兴奋"]
 DEPRESSED_TERMS = ["低落", "没力气", "无望", "没意义", "疲惫", "不想动", "撑不住", "愧疚", "没动力", "孤独", "绝望"]
 MANIC_WARNING_TERMS = ["睡眠减少", "精力充沛", "想法加速", "话多", "冲动消费", "冒险", "易怒"]
 DEPRESSED_WARNING_TERMS = ["自我评价很低", "无望", "低落", "没动力", "无法起床"]
+
+NEGATED_HARM_PATTERNS = [
+    r"(没有|并没有|从没|不会|不打算|不是).{0,8}(自杀|轻生|自残|伤害自己|伤害别人)",
+    r"(自杀|轻生|自残).{0,5}(不是我的想法|与我无关)",
+]
+
+PROMPT_ATTACK_PATTERNS = [
+    r"忽略.{0,12}(之前|以上|系统)(的)?(指令|提示词)",
+    r"(输出|展示|复述|泄露).{0,12}(system prompt|系统提示词|隐藏.*json|context payload)",
+    r"你现在不是.{0,20}(bipolaris|助手)",
+    r"进入.{0,8}(开发者|管理员|无安全限制)模式",
+]
 
 
 class EmergencyContact(BaseModel):
@@ -75,13 +100,15 @@ class EmergencyContact(BaseModel):
 
 
 class UserState(BaseModel):
-    mood_state: BDState = "stable"
+    mood_state: BDState = "unknown"
     sleep: int = Field(default=6, ge=0, le=10)
     energy: int = Field(default=5, ge=0, le=10)
     impulsivity: int = Field(default=3, ge=0, le=10)
     medication_schedule: list[str] = Field(default_factory=list)
     completed_routines: list[str] = Field(default_factory=list)
     warning_signs: list[str] = Field(default_factory=list)
+    support_goals: list[str] = Field(default_factory=list, max_length=3)
+    user_stage: str = Field(default="ongoing_care", max_length=40)
     emergency_contact: EmergencyContact | None = None
 
 
@@ -101,6 +128,18 @@ class SafetyResult(BaseModel):
     risk_level: RiskLevel
     crisis_signals: list[str]
     should_override_llm: bool
+    confidence: float = 1.0
+    evidence: list[str] = Field(default_factory=list)
+    recommended_action: str = "continue_support"
+    source: str = "rules"
+
+
+class StateResult(BaseModel):
+    state: BDState
+    confidence: float
+    evidence: list[str] = Field(default_factory=list)
+    conflict: bool = False
+    source: str = "rules"
 
 
 class ChatResponse(BaseModel):
@@ -114,11 +153,15 @@ class ChatResponse(BaseModel):
 class FeedbackRequest(BaseModel):
     case_id: str | None = None
     rating: int | None = Field(default=None, ge=1, le=5)
-    label: Literal["helpful", "not_helpful", "unsafe", "medical_boundary", "too_generic", "other"] = "other"
+    label: Literal["helpful", "not_helpful", "not_understood", "unsafe", "medical_boundary", "too_generic", "not_actionable", "uncomfortable", "other"] = "other"
     comment: str | None = None
     risk_level: str | None = None
     bd_state: str | None = None
     selected_strategy: str | None = None
+    user_message: str | None = Field(default=None, max_length=5000)
+    assistant_reply: str | None = Field(default=None, max_length=8000)
+    rag_sources: list[str] = Field(default_factory=list, max_length=10)
+    used_openai: bool | None = None
 
 
 class MoodLogRequest(BaseModel):
@@ -143,6 +186,8 @@ class UserSettingsRequest(BaseModel):
     display_name: str = Field(default="", max_length=80)
     age_range: str = Field(default="", max_length=40)
     diagnosis_status: str = Field(default="", max_length=80)
+    support_goals: list[str] = Field(default_factory=lambda: ["warning_signs"], max_length=3)
+    user_stage: str = Field(default="ongoing_care", max_length=40)
     emergency_contact_name: str = Field(default="", max_length=80)
     emergency_contact_phone: str = Field(default="", max_length=40)
     emergency_contact_relation: str = Field(default="", max_length=60)
@@ -152,6 +197,10 @@ class UserSettingsRequest(BaseModel):
     medication_enabled: bool = False
     medication_time: str = "21:00"
     appointment_enabled: bool = True
+    appointment_date: str = Field(default="", max_length=20)
+    weekly_review_enabled: bool = True
+    weekly_review_day: int = Field(default=0, ge=0, le=6)
+    weekly_review_time: str = Field(default="19:30", max_length=8)
     long_term_memory_enabled: bool = True
     updated_at: str = ""
 
@@ -210,31 +259,68 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
-def safety_filter(message: str) -> SafetyResult:
+def normalized_confidence(value: Any, default: float = 0.5) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def safety_filter(
+    message: str, history: list[ChatMessage] | None = None, semantic_enabled: bool = True
+) -> SafetyResult:
     normalized = normalize_text(message)
+    negated_harm = any(re.search(p, normalized, flags=re.IGNORECASE) for p in NEGATED_HARM_PATTERNS)
+    imminent = [] if negated_harm else [
+        p for p in IMMINENT_PATTERNS if re.search(p, normalized, flags=re.IGNORECASE)
+    ]
+    if imminent:
+        return SafetyResult(risk_level="imminent", crisis_signals=imminent,
+            should_override_llm=True, confidence=0.99, evidence=imminent,
+            recommended_action="activate_crisis", source="rules")
     signals: list[str] = []
     for pattern in CRISIS_PATTERNS:
-        if re.search(pattern, normalized, flags=re.IGNORECASE):
+        if not negated_harm and re.search(pattern, normalized, flags=re.IGNORECASE):
             signals.append(pattern)
     if signals:
         return SafetyResult(
-            risk_level="crisis",
+            risk_level="high",
             crisis_signals=signals,
             should_override_llm=True,
+            evidence=signals,
+            recommended_action="activate_crisis",
         )
 
     elevated_signals: list[str] = []
     for pattern in ELEVATED_RISK_PATTERNS:
         if re.search(pattern, normalized, flags=re.IGNORECASE):
             elevated_signals.append(pattern)
-    return SafetyResult(
-        risk_level="medium" if elevated_signals else "low",
-        crisis_signals=elevated_signals,
-        should_override_llm=False,
-    )
+    if elevated_signals:
+        return SafetyResult(risk_level="medium", crisis_signals=elevated_signals,
+            should_override_llm=False, confidence=0.9, evidence=elevated_signals,
+            recommended_action="check_safety")
+
+    semantic = classify_risk_semantically(
+        message, [item.model_dump() for item in (history or [])]
+    ) if semantic_enabled else None
+    if semantic:
+        level = str(semantic.get("level", "low"))
+        if level not in {"low", "medium", "high", "imminent"}:
+            level = "medium"
+        confidence = normalized_confidence(semantic.get("confidence"))
+        # Low-confidence ambiguity is conservatively raised to medium, never silently lowered.
+        if confidence < 0.65 and level == "low":
+            level = "medium"
+        return SafetyResult(
+            risk_level=level, crisis_signals=[], should_override_llm=level in {"high", "imminent"},
+            confidence=confidence, evidence=[str(x) for x in semantic.get("evidence", [])][:3],
+            recommended_action=str(semantic.get("action", "check_safety")), source="llm",
+        )
+    return SafetyResult(risk_level="low", crisis_signals=[], should_override_llm=False,
+        confidence=0.7, evidence=[], recommended_action="continue_support", source="fallback")
 
 
-def infer_bd_state(message: str, state: UserState) -> BDState:
+def infer_bd_state(message: str, state: UserState, history: list[ChatMessage] | None = None) -> StateResult:
     normalized = normalize_text(message)
     warning_text = " ".join(state.warning_signs)
     manic_score = sum(1 for term in MANIC_TERMS if term in normalized)
@@ -250,16 +336,31 @@ def infer_bd_state(message: str, state: UserState) -> BDState:
     depressed_score += 1 if state.sleep <= 4 and state.energy <= 4 else 0
 
     if state.mood_state == "mixed" or (manic_score >= 2 and depressed_score >= 2):
-        return "mixed"
+        return StateResult(state="mixed", confidence=0.92, evidence=["elevated_and_depressed_signals"], conflict=False)
     if manic_score >= 2:
-        return "manic"
+        return StateResult(state="manic", confidence=min(0.95, 0.65 + manic_score * 0.07), evidence=["elevated_signals"])
     if depressed_score >= 2:
-        return "depressed"
-    return "stable"
+        return StateResult(state="depressed", confidence=min(0.95, 0.65 + depressed_score * 0.07), evidence=["depressive_signals"])
+    if state.mood_state == "stable" and 4 <= state.energy <= 6 and state.impulsivity <= 4 and state.sleep >= 5:
+        return StateResult(state="stable", confidence=0.78, evidence=["stable_self_report_and_metrics"])
+
+    semantic = classify_state_semantically(message, state.model_dump(), [x.model_dump() for x in (history or [])])
+    if semantic:
+        label = str(semantic.get("state", "unknown"))
+        if label not in {"stable", "manic", "depressed", "mixed", "unknown"}:
+            label = "unknown"
+        confidence = normalized_confidence(semantic.get("confidence"))
+        conflict = bool(semantic.get("conflict", False))
+        if confidence < 0.65 or conflict:
+            label = "unknown" if label == "stable" else ("mixed" if label in {"manic", "depressed"} and conflict else label)
+        return StateResult(state=label, confidence=confidence,
+            evidence=[str(x) for x in semantic.get("evidence", [])][:3], conflict=conflict, source="llm")
+    return StateResult(state="unknown", confidence=0.45, evidence=["insufficient_evidence"], source="fallback")
 
 
 def retrieve_examples(message: str, inferred_state: BDState) -> list[dict[str, Any]]:
-    safety = safety_filter(message)
+    # Retrieval only needs a cheap routing hint; full semantic safety analysis happens once upstream.
+    safety = safety_filter(message, [], semantic_enabled=False)
     rag_results = retriever.search(
         message,
         top_k=RAG_TOP_K,
@@ -285,7 +386,7 @@ def retrieve_examples(message: str, inferred_state: BDState) -> list[dict[str, A
 def select_strategy(
     message: str, inferred_state: BDState, safety: SafetyResult, retrieved_examples: list[dict[str, Any]]
 ) -> str:
-    if safety.risk_level == "crisis":
+    if safety.risk_level in {"high", "imminent", "crisis"}:
         return "Crisis override: validation + emergency resources + no method elaboration"
     if safety.risk_level == "medium":
         return "Medium-risk de-escalation: validation + reduce stimulation + delay impulsive action + contact support"
@@ -303,7 +404,7 @@ def select_strategy(
     return "Reflection of feelings + Restatement or Paraphrasing"
 
 
-def build_long_term_memory(user_id: str | None) -> dict[str, Any]:
+def build_long_term_memory(user_id: str | None, current_state: UserState | None = None) -> dict[str, Any]:
     if not user_id:
         return {"enabled": False, "reason": "missing_user_id"}
     settings = get_user_settings(user_id)
@@ -314,8 +415,23 @@ def build_long_term_memory(user_id: str | None) -> dict[str, Any]:
     if not logs:
         return {"enabled": True, "record_count": 0, "summary": "暂无长期记录。"}
 
-    def avg(key: str) -> float:
-        return round(sum(int(log.get(key) or 0) for log in logs) / len(logs), 2)
+    def avg(key: str, rows: list[dict[str, Any]] | None = None) -> float:
+        selected = rows or logs
+        return round(sum(int(log.get(key) or 0) for log in selected) / len(selected), 2)
+
+    baseline_rows = logs[1:] if len(logs) > 1 else logs
+    recent_rows = logs[:7]
+    change_signals: list[dict[str, Any]] = []
+    if current_state and len(logs) >= 3 and len(baseline_rows) >= 2:
+        comparisons = {
+            "sleep": (current_state.sleep / 2, avg("sleep", baseline_rows), -1.0, "睡眠低于个人近期基线"),
+            "energy": (current_state.energy / 2, avg("energy", baseline_rows), 1.0, "精力高于个人近期基线"),
+            "impulse": (current_state.impulsivity / 2, avg("impulse", baseline_rows), 1.0, "冲动高于个人近期基线"),
+        }
+        for metric, (current, baseline, threshold, label) in comparisons.items():
+            delta = round(current - baseline, 2)
+            if (threshold < 0 and delta <= threshold) or (threshold > 0 and delta >= threshold):
+                change_signals.append({"metric": metric, "current": current, "baseline": baseline, "delta": delta, "label": label})
 
     state_counts = Counter(str(log.get("state") or "unknown") for log in logs)
     medication_counts = Counter(str(log.get("medication") or "none") for log in logs)
@@ -350,6 +466,24 @@ def build_long_term_memory(user_id: str | None) -> dict[str, Any]:
             "medication_counts": dict(medication_counts),
             "warning_days": len(warning_logs),
         },
+        "personal_baseline": {
+            "records": len(baseline_rows),
+            "avg_mood": avg("mood", baseline_rows),
+            "avg_sleep": avg("sleep", baseline_rows),
+            "avg_energy": avg("energy", baseline_rows),
+            "avg_impulse": avg("impulse", baseline_rows),
+        },
+        "recent_7_records": {
+            "avg_mood": avg("mood", recent_rows),
+            "avg_sleep": avg("sleep", recent_rows),
+            "avg_energy": avg("energy", recent_rows),
+            "avg_impulse": avg("impulse", recent_rows),
+        },
+        "change_signals": change_signals,
+        "personalization": {
+            "support_goals": settings.get("support_goals", []) if settings else [],
+            "user_stage": settings.get("user_stage", "ongoing_care") if settings else "ongoing_care",
+        },
         "possible_triggers": [term for term, _ in note_terms.most_common(6)],
         "summary": (
             f"最近 {len(logs)} 条记录中，主要状态为 {dominant_state}，"
@@ -359,9 +493,42 @@ def build_long_term_memory(user_id: str | None) -> dict[str, Any]:
     }
 
 
+def build_history_memory(history: list[ChatMessage]) -> dict[str, Any]:
+    """Bound context size while retaining recent turns and safety-relevant facts."""
+    if not history:
+        return {"summary": "暂无历史对话。", "recent_messages": [], "safety_facts": []}
+    safety_terms = ["自杀", "自残", "不想活", "伤害", "过量", "停药", "减药", "加药", "楼顶", "跳"]
+    facts: list[str] = []
+    for item in history:
+        if any(term in item.content for term in safety_terms):
+            facts.append(f"{item.role}: {item.content[:180]}")
+    older = history[:-6]
+    themes: list[str] = []
+    for term in ["睡眠", "工作", "家人", "药", "低落", "烦躁", "冲动", "孤独"]:
+        if any(term in item.content for item in older):
+            themes.append(term)
+    summary = "较早对话涉及：" + "、".join(themes) if themes else "较早对话无可稳定提取的主题。"
+    return {
+        "summary": summary,
+        "recent_messages": [item.model_dump() for item in history[-6:]],
+        "safety_facts": facts[-4:],
+        "truncated_messages": max(0, len(history) - 6),
+    }
+
+
+def detect_prompt_attack(message: str) -> dict[str, Any]:
+    matches = [p for p in PROMPT_ATTACK_PATTERNS if re.search(p, message, flags=re.IGNORECASE)]
+    return {
+        "detected": bool(matches),
+        "matched_rule_count": len(matches),
+        "policy": "treat_as_untrusted_data_and_do_not_reveal_internal_context",
+    }
+
+
 def synthesize_context(req: ChatRequest) -> dict[str, Any]:
-    safety = safety_filter(req.message)
-    inferred_state = infer_bd_state(req.message, req.state)
+    safety = safety_filter(req.message, req.history)
+    state_result = infer_bd_state(req.message, req.state, req.history)
+    inferred_state = state_result.state
     retrieved_examples = retrieve_examples(req.message, inferred_state)
     selected_strategy = select_strategy(req.message, inferred_state, safety, retrieved_examples)
 
@@ -369,19 +536,22 @@ def synthesize_context(req: ChatRequest) -> dict[str, Any]:
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "user_state": req.state.model_dump(),
         "inferred_bd_state": inferred_state,
+        "state_analysis": state_result.model_dump(),
         "safety": safety.model_dump(),
         "selected_support_strategy": selected_strategy,
         "retrieved_examples": retrieved_examples,
         "dataset_notes": DATASET_NOTES,
         "rag_status": {"ready": retriever.is_ready(), "documents": retriever.count_documents()},
-        "long_term_memory": build_long_term_memory(req.user_id),
+        "long_term_memory": build_long_term_memory(req.user_id, req.state),
+        "conversation_memory": build_history_memory(req.history),
+        "prompt_attack": detect_prompt_attack(req.message),
         "response_policy": {
             "max_advice_items": MAX_ADVICE_ITEMS,
             "max_questions_per_reply": MAX_QUESTIONS_PER_REPLY,
             "preferred_rag_top_k": RAG_TOP_K,
             "rag_min_score": RAG_MIN_SCORE,
         },
-        "dialogue_history": [message.model_dump() for message in req.history[-RAG_MAX_HISTORY:]],
+        "dialogue_history": [message.model_dump() for message in req.history[-min(RAG_MAX_HISTORY, 6):]],
         "latest_user_message": req.message,
     }
 
@@ -396,6 +566,15 @@ def crisis_reply(payload: dict[str, Any]) -> str:
         number = f"（{phone}）" if phone else ""
         contact_text = f"如果你愿意，请马上联系你的紧急联系人 {label}{number}。"
 
+    risk_level = str((payload.get("safety") or {}).get("risk_level") or "high")
+    if risk_level == "high":
+        return (
+            "我很在意你刚才提到的伤害自己或他人的念头。你不需要独自处理这一刻。"
+            "请先和可能造成伤害的物品拉开距离，并马上联系一个能来到你身边的人。\n\n"
+            "你也可以立即拨打希望24热线 400-161-9995；如果你觉得自己可能马上行动，请直接拨打 120。"
+            f"{contact_text}\n\n"
+            "我不会追问方法细节。现在只需要确认一件事：你能否先走到有人在场、相对安全的地方？"
+        )
     return (
         "我能感受到你现在真的非常痛苦，这种感觉一定让你快要撑不住了，我很心疼你。"
         "请你先不要做伤害自己或他人的事情，也不要一个人继续扛着。\n\n"
@@ -527,11 +706,16 @@ def admin_metrics(
     rag_hits = sum(1 for props in reply_props if props.get("used_rag"))
     openai_hits = sum(1 for props in reply_props if props.get("used_openai"))
     feedback_total = counts["feedback_submitted"]
+    feedback_reason_counts = Counter(
+        str(parse_event_properties(row).get("label"))
+        for row in rows
+        if row["event_name"] == "feedback_submitted" and parse_event_properties(row).get("label")
+    )
     negative_feedback = sum(
         1
         for row in rows
         if row["event_name"] == "feedback_submitted"
-        and parse_event_properties(row).get("label") == "not_helpful"
+        and parse_event_properties(row).get("label") not in {None, "helpful"}
     )
 
     app_opened = counts["app_opened"]
@@ -564,6 +748,7 @@ def admin_metrics(
             "feedback_submitted": feedback_total,
             "negative_feedback": negative_feedback,
             "negative_feedback_rate": percent(negative_feedback, feedback_total),
+            "feedback_reason_counts": dict(feedback_reason_counts),
             "chat_error": counts["chat_error"],
         },
         safety={
@@ -591,7 +776,7 @@ def admin_metrics(
 
 @app.post("/safety-filter", response_model=SafetyResult)
 def safety_filter_endpoint(req: ChatRequest) -> SafetyResult:
-    return safety_filter(req.message)
+    return safety_filter(req.message, req.history)
 
 
 @app.post("/synthesize-context")
@@ -611,6 +796,10 @@ def feedback(req: FeedbackRequest) -> dict[str, str]:
             "risk_level": req.risk_level,
             "bd_state": req.bd_state,
             "selected_strategy": req.selected_strategy,
+            "user_message": encrypt_text(req.user_message or ""),
+            "assistant_reply": encrypt_text(req.assistant_reply or ""),
+            "rag_sources": req.rag_sources,
+            "used_openai": req.used_openai,
         },
     )
     return {"status": "ok"}
@@ -682,6 +871,8 @@ def default_user_settings(user_id: str) -> dict[str, Any]:
         "display_name": "",
         "age_range": "",
         "diagnosis_status": "",
+        "support_goals": ["warning_signs"],
+        "user_stage": "ongoing_care",
         "emergency_contact_name": "",
         "emergency_contact_phone": "",
         "emergency_contact_relation": "",
@@ -691,6 +882,10 @@ def default_user_settings(user_id: str) -> dict[str, Any]:
         "medication_enabled": False,
         "medication_time": "21:00",
         "appointment_enabled": True,
+        "appointment_date": "",
+        "weekly_review_enabled": True,
+        "weekly_review_day": 0,
+        "weekly_review_time": "19:30",
         "long_term_memory_enabled": True,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }

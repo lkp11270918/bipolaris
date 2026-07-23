@@ -1,5 +1,9 @@
 .venv/
 .vercel/
+.next/
+.pnpm-store/
+node_modules/
+*.tsbuildinfo
 .DS_Store
 __pycache__/
 *.pyc

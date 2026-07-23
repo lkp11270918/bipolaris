@@ -23,6 +23,8 @@ import {
   trackEvent,
   type UserSettings,
 } from "@/lib/bipolaris-api"
+import { supportGoalOptions, userStageOptions, type SupportGoal, type UserStage } from "@/lib/product-profile"
+import { requestReminderPermission } from "@/lib/reminders"
 
 type Modal = "profile" | "contact" | "privacy" | "resources" | "delete" | null
 
@@ -83,8 +85,10 @@ export function SettingsScreen() {
   const [draft, setDraft] = useState<UserSettings>(() => getUserSettings())
   const [modal, setModal] = useState<Modal>(null)
   const [savedHint, setSavedHint] = useState("")
+  const [notificationPermission, setNotificationPermission] = useState<string>("default")
 
   useEffect(() => {
+    if ("Notification" in window) setNotificationPermission(Notification.permission)
     void fetchUserSettings()
       .then((remote) => {
         setSettings(remote)
@@ -238,6 +242,13 @@ export function SettingsScreen() {
 
         <section>
           <h2 className="text-sm font-semibold text-foreground mb-3">提醒设置</h2>
+          <button
+            onClick={() => void requestReminderPermission().then(setNotificationPermission)}
+            className="w-full mb-3 bg-accent text-accent-foreground rounded-2xl px-4 py-3 text-left"
+          >
+            <p className="text-sm font-medium">{notificationPermission === "granted" ? "浏览器通知已开启" : "开启浏览器通知"}</p>
+            <p className="text-xs opacity-75 mt-0.5">网页版需允许通知；浏览器限制可能影响后台送达</p>
+          </button>
           <div className="bg-card border border-border rounded-2xl divide-y divide-border">
             <div className="flex items-center justify-between px-4 py-3.5 gap-3">
               <div className="flex items-center gap-3">
@@ -287,6 +298,22 @@ export function SettingsScreen() {
                 checked={settings.appointmentEnabled}
                 onChange={(checked) => updateSetting("appointmentEnabled", checked)}
               />
+            </div>
+            {settings.appointmentEnabled && (
+              <label className="flex items-center justify-between px-4 py-3.5 gap-3">
+                <span className="text-xs text-muted-foreground">下次复诊日期</span>
+                <input type="date" value={settings.appointmentDate} onChange={(event) => updateSetting("appointmentDate", event.target.value)} className="text-xs text-foreground bg-transparent focus:outline-none" />
+              </label>
+            )}
+            <div className="flex items-center justify-between px-4 py-3.5 gap-3">
+              <div className="flex items-center gap-3">
+                <Bell className="w-4 h-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm text-foreground">每周状态回顾</p>
+                  <input type="time" value={settings.weeklyReviewTime} onChange={(event) => updateSetting("weeklyReviewTime", event.target.value)} className="text-xs text-muted-foreground bg-transparent focus:outline-none" />
+                </div>
+              </div>
+              <Toggle checked={settings.weeklyReviewEnabled} onChange={(checked) => updateSetting("weeklyReviewEnabled", checked)} />
             </div>
           </div>
         </section>
@@ -413,6 +440,23 @@ export function SettingsScreen() {
                     onChange={(value) => setDraft((p) => ({ ...p, diagnosisStatus: value }))}
                     placeholder="例如：已确诊双相II型 / 正在评估"
                   />
+                  <label className="block">
+                    <span className="text-xs font-medium text-muted-foreground block mb-1.5">当前阶段</span>
+                    <select value={draft.userStage} onChange={(event) => setDraft((current) => ({ ...current, userStage: event.target.value as UserStage }))} className="w-full bg-muted border border-border rounded-2xl px-4 py-3 text-sm text-foreground">
+                      {userStageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <div>
+                    <span className="text-xs font-medium text-muted-foreground block mb-2">主要目标（最多 2 项）</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      {supportGoalOptions.map((goal) => {
+                        const selected = draft.supportGoals.includes(goal.value)
+                        return (
+                          <button key={goal.value} type="button" onClick={() => setDraft((current) => ({ ...current, supportGoals: selected ? current.supportGoals.filter((item) => item !== goal.value) : current.supportGoals.length < 2 ? [...current.supportGoals, goal.value as SupportGoal] : [current.supportGoals[1], goal.value as SupportGoal] }))} className={`p-3 rounded-xl border text-xs text-left ${selected ? "border-primary bg-accent text-accent-foreground" : "border-border bg-card text-muted-foreground"}`}>{goal.label}</button>
+                        )
+                      })}
+                    </div>
+                  </div>
                 </div>
                 <button
                   onClick={() => {

@@ -24,7 +24,16 @@ interface MetricsResponse {
   active_users: number
   active_sessions: number
   funnel: Record<string, number>
-  engagement: Record<string, number>
+  engagement: {
+    message_sent: number
+    assistant_reply_received: number
+    messages_per_active_user: number
+    feedback_submitted: number
+    negative_feedback: number
+    negative_feedback_rate: number
+    chat_error: number
+    feedback_reason_counts?: Record<string, number>
+  }
   safety: Record<string, number>
   model_quality: Record<string, number>
   settings: Record<string, number>
@@ -34,6 +43,16 @@ interface MetricsResponse {
 function formatNumber(value: number | undefined, suffix = "") {
   if (value === undefined || Number.isNaN(value)) return `0${suffix}`
   return `${Number(value).toLocaleString("zh-CN")}${suffix}`
+}
+
+const feedbackReasonLabels: Record<string, string> = {
+  helpful: "有帮助",
+  not_understood: "没有理解",
+  too_generic: "太空泛",
+  not_actionable: "建议不可执行",
+  uncomfortable: "感到不适",
+  unsafe: "安全风险",
+  not_helpful: "其他负反馈",
 }
 
 function MetricCard({
@@ -299,6 +318,19 @@ export default function AdminPage() {
                     Icon={Activity}
                   />
                 </div>
+                {Object.keys(metrics.engagement.feedback_reason_counts || {}).length > 0 && (
+                  <div className="bg-card border border-border rounded-2xl p-4">
+                    <p className="text-xs font-medium text-foreground mb-3">回复反馈原因</p>
+                    <div className="space-y-2">
+                      {Object.entries(metrics.engagement.feedback_reason_counts || {}).map(([reason, count]) => (
+                        <div key={reason} className="flex items-center justify-between text-xs">
+                          <span className="text-muted-foreground">{feedbackReasonLabels[reason] || reason}</span>
+                          <span className="font-medium text-foreground">{count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </Section>
             </div>
 

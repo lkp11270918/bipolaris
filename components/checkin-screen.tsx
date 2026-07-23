@@ -5,6 +5,8 @@ import { ChevronRight, ChevronLeft } from "lucide-react"
 
 interface CheckinScreenProps {
   onComplete: (data: CheckinData) => void
+  quick?: boolean
+  onUseFullCheckin?: () => void
 }
 
 export interface CheckinData {
@@ -25,6 +27,16 @@ const moodColors = [
   "bg-green-50 border-green-200 text-green-600",
   "bg-green-100 border-green-300 text-green-700",
 ]
+
+function inferQuickState(data: CheckinData): CheckinData["state"] {
+  const elevated = data.sleep <= 2 && (data.energy >= 4 || data.impulse >= 4)
+  const depressed = data.mood <= 2 && data.energy <= 2
+  if (elevated && data.mood <= 2) return "mixed"
+  if (elevated) return "manic"
+  if (depressed) return "depressed"
+  if (data.mood >= 3 && data.energy >= 2 && data.energy <= 4 && data.impulse <= 3) return "stable"
+  return "unknown"
+}
 
 function ScaleSelector({
   value,
@@ -86,7 +98,7 @@ const StateCard = ({
   </button>
 )
 
-export function CheckinScreen({ onComplete }: CheckinScreenProps) {
+export function CheckinScreen({ onComplete, quick = false, onUseFullCheckin }: CheckinScreenProps) {
   const [step, setStep] = useState(0)
   const [data, setData] = useState<CheckinData>({
     mood: 0,
@@ -115,6 +127,65 @@ export function CheckinScreen({ onComplete }: CheckinScreenProps) {
     } else {
       onComplete(data)
     }
+  }
+
+  if (quick) {
+    const quickReady = data.mood > 0 && data.sleep > 0 && data.energy > 0 && data.impulse > 0
+    return (
+      <div className="h-full bg-background flex flex-col">
+        <div className="flex-1 overflow-y-auto px-6 pt-12 pb-6">
+          <div className="flex items-start justify-between gap-4 mb-7">
+            <div>
+              <p className="text-xs text-primary font-medium mb-2">约 10 秒</p>
+              <h1 className="text-2xl font-semibold text-foreground mb-2">今天快速记一下</h1>
+              <p className="text-sm text-muted-foreground">先记录最重要的变化，之后随时可以补充。</p>
+            </div>
+            <button onClick={onUseFullCheckin} className="text-xs text-primary shrink-0 py-2">完整记录</button>
+          </div>
+
+          <div className="space-y-5">
+            {[
+              { label: "情绪", key: "mood" as const, ends: ["很低", "很好"] },
+              { label: "睡眠", key: "sleep" as const, ends: ["很差", "很好"] },
+              { label: "精力", key: "energy" as const, ends: ["很低", "很高"] },
+              { label: "冲动", key: "impulse" as const, ends: ["平静", "很强"] },
+            ].map((field) => (
+              <div key={field.key}>
+                <div className="flex justify-between mb-2">
+                  <span className="text-sm font-medium text-foreground">{field.label}</span>
+                  <span className="text-xs text-muted-foreground">{data[field.key] || "未选"}</span>
+                </div>
+                <ScaleSelector value={data[field.key]} onChange={(value) => updateData(field.key, value)} />
+                <div className="flex justify-between mt-1.5 text-xs text-muted-foreground">
+                  <span>{field.ends[0]}</span><span>{field.ends[1]}</span>
+                </div>
+              </div>
+            ))}
+            <div>
+              <p className="text-sm font-medium text-foreground mb-2">今日用药</p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  ["taken", "已按时"], ["partial", "部分服药"], ["missed", "忘记了"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    onClick={() => updateData("medication", value as CheckinData["medication"])}
+                    className={`h-11 rounded-xl border text-xs font-medium ${data.medication === value ? "bg-primary border-primary text-primary-foreground" : "bg-card border-border text-muted-foreground"}`}
+                  >{label}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="px-6 pb-8 pt-3">
+          <button
+            disabled={!quickReady}
+            onClick={() => onComplete({ ...data, state: inferQuickState(data) })}
+            className="w-full py-4 rounded-2xl bg-primary text-primary-foreground font-medium disabled:bg-muted disabled:text-muted-foreground"
+          >保存并开始对话</button>
+        </div>
+      </div>
+    )
   }
 
   return (

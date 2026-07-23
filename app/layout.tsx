@@ -1,18 +1,6 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
-import { Noto_Sans_SC, Geist_Mono } from 'next/font/google'
 import './globals.css'
-
-const notoSansSC = Noto_Sans_SC({
-  variable: '--font-noto',
-  subsets: ['latin'],
-  weight: ['300', '400', '500', '700'],
-})
-
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
-  subsets: ['latin'],
-})
 
 export const metadata: Metadata = {
   title: 'Bipolaris · 情绪陪伴助手',
@@ -38,7 +26,7 @@ export default function RootLayout({
   return (
     <html
       lang="zh-CN"
-      className={`${notoSansSC.variable} ${geistMono.variable} bg-background`}
+      className="bg-background"
     >
       <body className="font-sans antialiased">
         {children}

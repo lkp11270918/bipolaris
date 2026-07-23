@@ -1,10 +1,15 @@
 # BiPolaris 双相情感障碍对话助手
 
-这是一个基于 `bipolaris.docx` 内容制作的本地静态原型，用于演示双相情感障碍对话助手的核心交互。
+BiPolaris 是一个面向双相情感障碍日常支持场景的 state-aware AI 产品原型。它由 Next.js 前端与 FastAPI 后端组成，通过工程规则、LLM 语义分类、RAG、Few-shot Prompt 和输出安全护栏组合实现状态化支持。它不提供诊断，也不能替代精神科治疗、心理咨询或急诊服务。
 
 ## 运行方式
 
-直接在浏览器打开 `index.html`。
+前端：
+
+```bash
+pnpm install
+pnpm dev
+```
 
 如需使用真实后端对话模型链路，先启动 FastAPI：
 
@@ -18,7 +23,42 @@ export OPENAI_MODEL="gpt-4.1-mini"
 uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-然后刷新 `index.html`。前端会优先调用 `http://127.0.0.1:8000/chat`；如果后端未启动，会退回本地 fallback 回复。
+在 `.env.local` 中设置 `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`，然后打开 Next.js 提供的本地地址。后端或模型不可用时，产品会使用安全降级回复；高风险响应不依赖生成模型。
+
+## AI 系统架构
+
+```text
+用户输入与状态记录
+        ↓
+Prompt Injection 预检
+        ↓
+工程风险规则 ── 命中明确风险 ──→ 分层危机响应
+        ↓ 未命中
+LLM 风险语义分类 ── 失败/低置信度 ──→ 保守兜底
+        ↓
+规则状态判断 + LLM 状态分类
+        ↓
+Unknown / Manic-Mixed 冲突处理
+        ↓
+状态策略路由 + 本地 RAG
+        ↓
+System Prompt + 正反 Few-shot
+        ↓
+LLM 回复生成 / 模型失败 fallback
+        ↓
+医疗越界、危机遗漏、Prompt 泄露后检查
+        ↓
+安全回复或拦截重写
+```
+
+风险等级分为：
+
+- `low`：普通支持。
+- `medium`：严重崩溃、失控或危险冲动；继续对话并降刺激。
+- `high`：明确自伤/他伤意图；切换现实支持和热线引导。
+- `imminent`：处于危险地点、持有工具或正在实施；直接使用紧急模板。
+
+状态分类分为 `stable`、`depressed`、`manic`、`mixed`、`unknown`，输出置信度、证据、冲突标记和判断来源。
 
 ## 真实数据集 + 本地 RAG
 
@@ -69,6 +109,10 @@ curl http://127.0.0.1:8000/rag/status
 - 自我状态速览：睡眠质量、精力水平、冲动程度。
 - 状态感知回复：根据用户输入和当前状态给出不同的支持性回应。
 - 危机优先机制：识别自伤、自杀、伤害他人、失控冲动等表达后，切换到危机响应。
+- 混合风险引擎：工程规则优先、LLM 语义分类、低置信度保守兜底。
+- Few-shot：覆盖平稳、低落、偏躁、混合、证据不足和即时危险，并包含错误反例。
+- 长上下文压缩：保留最近对话、较早主题摘要和独立安全事实。
+- Prompt 防护：识别角色劫持与提示词索取，并拦截隐藏上下文泄露。
 - 危机资源：希望24热线 `400-161-9995`、急救电话 `120`、紧急联系人提醒。
 - 稳定工具：生活锚点、早期预警信号、5-4-3-2-1 感官稳定练习。
 - FastAPI 后端：`/chat`、`/safety-filter`、`/synthesize-context`。
@@ -122,6 +166,18 @@ curl http://127.0.0.1:8000/rag/status
 生成文件：
 
 - `backend/evals/results/badcase_report.md`
+
+6. 构建并运行 50 条专项安全与状态评测：
+
+```bash
+.venv/bin/python -m backend.evals.build_specialized_benchmark
+.venv/bin/python -m backend.evals.run_eval \
+  --cases backend/evals/specialized_benchmark.jsonl \
+  --out-jsonl backend/evals/results/specialized_latest.jsonl \
+  --out-csv backend/evals/results/specialized_latest.csv
+```
+
+专项集覆盖即时危险、明确意图、中风险失控、Manic、Depressed、Mixed、Stable、用药越界和 Prompt Injection。当前确定性 fallback 基线为 50/50 通过；该结果仅表示产品规则验收通过，不代表临床有效性。
 
 ## 匿名反馈与日志
 

@@ -1,0 +1,10 @@
+.venv/
+.vercel/
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.local
+backend/.env
+backend/data/
+backend/evals/results/
