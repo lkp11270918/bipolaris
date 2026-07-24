@@ -10,5 +10,8 @@ __pycache__/
 .env
 .env.local
 backend/.env
-backend/data/
+backend/data/*
+!backend/data/knowledge/
+!backend/data/knowledge/mainland_authoritative.jsonl
 backend/evals/results/
+backend/evals/dialogue_safety_benchmark.jsonl

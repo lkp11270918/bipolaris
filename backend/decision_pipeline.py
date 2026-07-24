@@ -43,8 +43,9 @@ class ResponsePlan(BaseModel):
 TOPIC_TERMS: list[tuple[str, tuple[str, ...]]] = [
     ("medication_boundary", ("停药", "加药", "减药", "补服", "漏服", "换药", "副作用", "剂量", "药")),
     ("followup_summary", ("复诊", "医生", "报告", "摘要", "就诊")),
-    ("sleep", ("睡眠", "失眠", "睡不着", "不困", "没睡")),
-    ("impulsivity", ("冲动", "花钱", "消费", "冒险", "开快车", "辞职")),
+    ("sleep", ("睡眠", "失眠", "睡不着", "不困", "没睡", "通宵")),
+    ("impulsivity", ("冲动", "花钱", "消费", "冒险", "开快车", "辞职", "借钱", "重大决定")),
+    ("relapse_warning", ("复发", "维持期", "预警", "长期状态", "再次发作", "稳定期")),
     ("relationship", ("伴侣", "家人", "关系", "朋友", "争吵")),
     ("work_stress", ("工作", "上班", "压力", "失业")),
 ]
@@ -85,8 +86,15 @@ def assess_turn(
     risk_level = str(safety.get("risk_level") or "low")
     bd_state = str(state_analysis.get("state") or "unknown")
     topic = infer_topic(message, risk_level)
+    if topic == "general_support":
+        topic = {
+            "manic": "manic_warning_signs",
+            "mixed": "mixed_state_support",
+            "depressed": "depressed_micro_action",
+        }.get(bd_state, topic)
     longitudinal = long_term_memory.get("change_signals") or []
     combined = long_term_memory.get("combined_signals") or []
+    dialogue_signals = long_term_memory.get("dialogue_signals") or []
     longitudinal_signals = [
         str(item.get("label") or item.get("signal") or "")
         for item in [*longitudinal, *combined]
@@ -95,6 +103,11 @@ def assess_turn(
     evidence = [
         *[str(item) for item in safety.get("evidence") or []],
         *[str(item) for item in state_analysis.get("evidence") or []],
+        *[
+            str(item.get("evidence") or item.get("signal"))
+            for item in dialogue_signals
+            if item.get("evidence") or item.get("signal")
+        ],
     ][:8]
     user_need = infer_user_need(message, topic, risk_level)
     return TurnAssessment(

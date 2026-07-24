@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 
@@ -163,3 +165,20 @@ CURATED_RAG_DOCS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+def load_mainland_authoritative_docs() -> list[dict[str, Any]]:
+    path = Path(__file__).parent / "data" / "knowledge" / "mainland_authoritative.jsonl"
+    if not path.exists():
+        return []
+    docs: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                docs.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return docs
+
+
+CURATED_RAG_DOCS.extend(load_mainland_authoritative_docs())

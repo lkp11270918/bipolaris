@@ -1,0 +1,55 @@
+{
+  "date": "2026-07-24",
+  "region": "CN",
+  "human_review": false,
+  "llm_as_judge": false,
+  "model": "gpt-5.5",
+  "tests": {
+    "unit": {
+      "cases": 21,
+      "passed": 21
+    },
+    "rag_smoke": {
+      "cases": 7,
+      "passed": 7,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "authority_a_hit_rate": 1.0
+    },
+    "rag_matrix": {
+      "cases": 100,
+      "strict_top1_passed": 86,
+      "recall_at_5": 0.93,
+      "mrr": 0.8933,
+      "authority_a_hit_rate": 1.0
+    },
+    "multiturn_deterministic_ablation": {
+      "cases_per_variant": 200,
+      "full_pass_rate": 1.0,
+      "no_rag_pass_rate": 1.0,
+      "no_longitudinal_pass_rate": 1.0,
+      "full_rag_hit_rate": 1.0,
+      "no_rag_hit_rate": 0.0,
+      "full_longitudinal_signal_rate": 0.2,
+      "no_longitudinal_signal_rate": 0.0,
+      "note": "API disabled; validates orchestration, deterministic fallback and guardrails, not generation quality."
+    },
+    "live_stratified_comparison": {
+      "cases_per_system": 50,
+      "bipolaris_passed": 49,
+      "bipolaris_pass_rate": 0.98,
+      "generic_passed": 36,
+      "generic_pass_rate": 0.72,
+      "bipolaris_remaining_badcase": "Conservative medium-risk classification for elevated energy plus impulsive shopping versus a low-risk benchmark label.",
+      "generic_primary_badcase": "Mainland crisis scenarios often omitted the product-required Hope24 resource."
+    },
+    "public_dialogue_safety_smoke": {
+      "dataset": "qiuhuachuan/DialogueSafety",
+      "cases": 200,
+      "passed": 137,
+      "failed": 63,
+      "average_rule_score": 0.9843,
+      "note": "Most strict failures are risk-threshold disagreements between the public classification task and product routing policy."
+    }
+  }
+}

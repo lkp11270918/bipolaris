@@ -39,27 +39,46 @@ def check_case(case: dict[str, Any], results: list[dict[str, Any]]) -> RagEvalRe
 
     metadata = top.get("metadata") or {}
     expected_source = case.get("expected_source")
+    expected_sources = set(case.get("expected_source_any") or [])
     expected_doc_type = case.get("expected_top_doc_type")
     expected_topic = case.get("expected_topic")
+    expected_topics = set(case.get("expected_topic_any") or [])
+    expected_authority = case.get("expected_authority_level")
     expected_doc_id = case.get("expected_doc_id")
-    relevant_rank = next(
-        (
-            rank
-            for rank, item in enumerate(results, start=1)
-            if (not expected_doc_id or item.get("doc_id") == expected_doc_id)
+
+    def is_relevant(item: dict[str, Any]) -> bool:
+        item_metadata = item.get("metadata") or {}
+        return (
+            (not expected_doc_id or item.get("doc_id") == expected_doc_id)
             and (not expected_source or item.get("source") == expected_source)
-            and (not expected_doc_type or (item.get("metadata") or {}).get("doc_type") == expected_doc_type)
-            and (not expected_topic or (item.get("metadata") or {}).get("topic") == expected_topic)
-        ),
+            and (not expected_sources or item.get("source") in expected_sources)
+            and (not expected_doc_type or item_metadata.get("doc_type") == expected_doc_type)
+            and (not expected_topic or item_metadata.get("topic") == expected_topic)
+            and (not expected_topics or item_metadata.get("topic") in expected_topics)
+            and (not expected_authority or item_metadata.get("authority_level") == expected_authority)
+        )
+
+    relevant_rank = next(
+        (rank for rank, item in enumerate(results, start=1) if is_relevant(item)),
         None,
     )
 
     if expected_source and top.get("source") != expected_source:
         failures.append(f"top source expected {expected_source}, got {top.get('source')}")
+    if expected_sources and top.get("source") not in expected_sources:
+        failures.append(f"top source expected one of {sorted(expected_sources)}, got {top.get('source')}")
     if expected_doc_type and metadata.get("doc_type") != expected_doc_type:
         failures.append(f"top doc_type expected {expected_doc_type}, got {metadata.get('doc_type')}")
     if expected_topic and metadata.get("topic") != expected_topic:
         failures.append(f"top topic expected {expected_topic}, got {metadata.get('topic')}")
+    if expected_topics and metadata.get("topic") not in expected_topics:
+        failures.append(f"top topic expected one of {sorted(expected_topics)}, got {metadata.get('topic')}")
+    if expected_authority and metadata.get("authority_level") != expected_authority:
+        failures.append(f"top authority expected {expected_authority}, got {metadata.get('authority_level')}")
+    if case.get("forbid_authority_c") and any(
+        (item.get("metadata") or {}).get("authority_level") == "C" for item in results
+    ):
+        failures.append("authority C leaked into restricted retrieval")
 
     summary = str(top.get("summary") or "")
     for group_item in case.get("must_include_any", []):

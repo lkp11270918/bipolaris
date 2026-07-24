@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from statistics import mean
+import re
+from statistics import mean, median, pstdev
 from typing import Any
 
 
@@ -29,12 +30,71 @@ def _average(rows: list[dict[str, Any]], key: str) -> float | None:
 
 def _window_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     states = Counter(str(row.get("state") or "unknown") for row in rows)
+    metric_summary: dict[str, Any] = {}
+    for metric in METRICS:
+        values = [float(row[metric]) for row in rows if row.get(metric) is not None]
+        metric_summary[f"avg_{metric}"] = round(mean(values), 2) if values else None
+        metric_summary[f"median_{metric}"] = round(median(values), 2) if values else None
+        metric_summary[f"range_{metric}"] = (
+            [round(min(values), 2), round(max(values), 2)] if values else None
+        )
+        metric_summary[f"volatility_{metric}"] = round(pstdev(values), 2) if len(values) >= 2 else 0.0
     return {
         "records": len(rows),
-        **{f"avg_{metric}": _average(rows, metric) for metric in METRICS},
+        **metric_summary,
         "state_counts": dict(states),
         "dominant_state": states.most_common(1)[0][0] if states else "unknown",
     }
+
+
+def _consecutive_warning_days(dated: list[tuple[datetime, dict[str, Any]]]) -> int:
+    longest = current = 0
+    previous_date = None
+    for created_at, row in dated:
+        warning = (
+            float(row.get("sleep") or 0) <= 2
+            or float(row.get("impulse") or 0) >= 4
+            or str(row.get("state")) in {"manic", "mixed"}
+        )
+        date = created_at.date()
+        contiguous = previous_date is None or (previous_date - date).days <= 1
+        current = current + 1 if warning and contiguous else (1 if warning else 0)
+        longest = max(longest, current)
+        previous_date = date
+    return longest
+
+
+def extract_dialogue_signals(messages: list[str]) -> list[dict[str, Any]]:
+    text = "\n".join(messages[-8:])
+    signals: list[dict[str, Any]] = []
+    sleep_match = re.search(r"(?:睡了|每天睡|只睡)\s*(\d+(?:\.\d+)?)\s*(?:个)?小时", text)
+    if sleep_match:
+        signals.append(
+            {
+                "metric": "sleep_hours",
+                "value": float(sleep_match.group(1)),
+                "evidence": sleep_match.group(0),
+                "source": "explicit_dialogue",
+            }
+        )
+    explicit_rules = {
+        "reduced_sleep_need": ("不需要睡", "睡很少也不困", "几天没睡"),
+        "increased_energy": ("精力特别高", "精力旺盛", "停不下来"),
+        "increased_impulsivity": ("冲动花钱", "控制不住购物", "冒险决定", "开快车"),
+        "medication_interruption": ("停药", "漏服", "忘记吃药", "没吃药"),
+        "depressive_function_loss": ("起不来", "什么都不想做", "没有力气"),
+    }
+    for signal, terms in explicit_rules.items():
+        matched = next((term for term in terms if term in text), None)
+        if matched:
+            signals.append(
+                {
+                    "signal": signal,
+                    "evidence": matched,
+                    "source": "explicit_dialogue",
+                }
+            )
+    return signals[:8]
 
 
 def build_longitudinal_state(logs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -56,6 +116,9 @@ def build_longitudinal_state(logs: list[dict[str, Any]]) -> dict[str, Any]:
         windows[f"{days}d"] = [row for created_at, row in dated if created_at >= cutoff]
 
     summaries = {name: _window_summary(rows) for name, rows in windows.items()}
+    summaries["3d"]["dates"] = [str(row.get("created_at") or "") for row in windows["3d"]]
+    summaries["7d"]["dates"] = [str(row.get("created_at") or "") for row in windows["7d"]]
+    summaries["30d"]["dates"] = [str(row.get("created_at") or "") for row in windows["30d"]]
     baseline_rows = windows["30d"]
     recent_rows = windows["3d"]
     signals: list[dict[str, Any]] = []
@@ -83,6 +146,7 @@ def build_longitudinal_state(logs: list[dict[str, Any]]) -> dict[str, Any]:
                         "baseline": baseline,
                         "delta": delta,
                         "label": labels[metric],
+                        "source_dates": [str(row.get("created_at") or "") for row in recent_rows],
                     }
                 )
 
@@ -125,6 +189,7 @@ def build_longitudinal_state(logs: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "windows": summaries,
         "personal_baseline": summaries["30d"],
+        "longest_consecutive_warning_days": _consecutive_warning_days(dated),
         "change_signals": signals,
         "combined_signals": combined,
         "evidence": evidence,

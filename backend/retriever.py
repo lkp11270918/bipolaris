@@ -35,7 +35,7 @@ def normalize_evidence_metadata(source: str, metadata: dict[str, Any]) -> dict[s
     if "authority_level" not in normalized:
         if doc_type in {"official_guideline", "official_patient_education"}:
             normalized["authority_level"] = "A"
-        elif doc_type in {"safety_rule", "medical_boundary", "clinical_knowledge", "support_strategy"}:
+        elif doc_type in {"safety_rule", "medical_boundary", "clinical_knowledge", "support_strategy"} or dataset == "thu-coai/esconv":
             normalized["authority_level"] = "B"
         else:
             normalized["authority_level"] = "C"
@@ -48,7 +48,7 @@ def normalize_evidence_metadata(source: str, metadata: dict[str, Any]) -> dict[s
             normalized["evidence_type"] = "conversation_example"
         else:
             normalized["evidence_type"] = "lived_experience"
-    normalized["medical_fact_allowed"] = normalized.get("authority_level") == "A"
+    normalized.setdefault("medical_fact_allowed", normalized.get("authority_level") == "A")
     normalized.setdefault("source_title", source)
     normalized.setdefault("published_at", "")
     normalized.setdefault("reviewed_at", "")
@@ -125,25 +125,35 @@ class LocalRetriever:
         topic: str | None = None,
         medical_fact_required: bool = False,
         allowed_authority_levels: set[str] | None = None,
+        region: str = "CN",
     ) -> list[dict[str, Any]]:
         context = self._infer_query_context(query, bd_state=bd_state, risk_level=risk_level)
         if topic:
             context["topic"] = topic
-        vector_results = self._vector_search(query, top_k=max(top_k * 3, 12), min_score=min_score, context=context)
-        lexical_results = self._lexical_search(query, top_k=max(top_k * 3, 12), context=context)
-        fused = self._fuse_results(vector_results, lexical_results, top_k=top_k, context=context)
+        context["region"] = region
+        context["medical_fact_required"] = "true" if medical_fact_required else "false"
+        context["allowed_authority_levels"] = ",".join(sorted(allowed_authority_levels or set()))
+        candidate_k = max(top_k * 5, 20)
+        vector_results = self._vector_search(query, top_k=candidate_k, min_score=min_score, context=context)
+        lexical_groups = [
+            self._lexical_search(variant, top_k=candidate_k, context=context)
+            for variant in self._rewrite_queries(query, context)
+        ]
+        lexical_results = self._merge_ranked_lists(lexical_groups, candidate_k)
+        fused = self._fuse_results(vector_results, lexical_results, top_k=candidate_k, context=context)
         candidates = fused or lexical_results
-        if medical_fact_required:
-            candidates = [
-                item for item in candidates if (item.get("metadata") or {}).get("medical_fact_allowed") is True
-            ]
-        elif allowed_authority_levels:
-            candidates = [
-                item
-                for item in candidates
-                if str((item.get("metadata") or {}).get("authority_level")) in allowed_authority_levels
-            ]
-        return candidates[:top_k]
+        return self._second_stage_rerank(query, candidates, context, top_k)
+
+    def _eligible(self, metadata: dict[str, Any], context: dict[str, str]) -> bool:
+        authority = str(metadata.get("authority_level") or "C")
+        if context.get("medical_fact_required") == "true" and not bool(metadata.get("medical_fact_allowed")):
+            return False
+        allowed = {item for item in context.get("allowed_authority_levels", "").split(",") if item}
+        if allowed and authority not in allowed:
+            return False
+        region = str(metadata.get("region") or "")
+        requested_region = context.get("region")
+        return not region or region in {requested_region, "international"}
 
     def _vector_search(
         self, query: str, top_k: int, min_score: float, context: dict[str, str]
@@ -156,6 +166,8 @@ class LocalRetriever:
         for doc in self._load_docs():
             assert doc.embedding is not None
             doc.metadata = normalize_evidence_metadata(doc.source, doc.metadata)
+            if not self._eligible(doc.metadata, context):
+                continue
             base_score = cosine_similarity(query_embedding, doc.embedding)
             final_score = self._rerank_score(base_score, doc.metadata, context)
             if base_score >= min_score or final_score >= min_score:
@@ -186,22 +198,30 @@ class LocalRetriever:
             topic = "followup_summary"
         elif any(term in lowered for term in ["停药", "加药", "减药", "补服", "副作用", "药", "medication", "dose"]):
             topic = "medication_boundary"
-        elif any(term in lowered for term in ["睡", "失眠", "不困", "insomnia", "sleep"]):
+        elif any(term in lowered for term in ["睡", "失眠", "不困", "通宵", "没睡", "insomnia", "sleep"]):
             topic = "sleep"
-        elif any(term in lowered for term in ["冲动", "花钱", "冒险", "砸东西", "impulsive"]):
+        elif any(term in lowered for term in ["冲动", "花钱", "冒险", "砸东西", "辞职", "开快车", "借钱", "重大决定", "impulsive"]):
             topic = "impulsivity"
         elif any(term in lowered for term in ["工作", "压力", "job", "work"]):
             topic = "work_stress"
         elif any(term in lowered for term in ["感情", "关系", "伴侣", "家人", "relationship"]):
             topic = "relationship"
-        elif any(term in lowered for term in ["起不来", "没动力", "不想动", "什么都不想做", "低落"]):
+        elif any(term in lowered for term in ["复发", "维持期", "预警", "长期状态", "再次发作", "稳定期"]):
+            topic = "relapse_warning"
+        elif any(term in lowered for term in ["起不来", "没动力", "不想动", "什么都不想做", "低落", "疲惫", "没力气", "兴趣", "情绪很沉"]):
             topic = "depressed_micro_action"
 
         inferred_risk = risk_level or "low"
-        if any(term in lowered for term in ["自杀", "轻生", "不想活", "活着没意义", "结束这一切", "自残", "吞药", "过量"]):
+        if any(term in lowered for term in ["自杀", "轻生", "不想活", "活着没意义", "结束这一切", "自残", "吞药", "过量", "从这个世界消失"]):
             inferred_risk = "crisis"
         elif any(term in lowered for term in ["崩溃", "受不了", "控制不住", "失控", "砸东西"]):
             inferred_risk = "medium"
+        if inferred_risk in {"crisis", "high", "imminent"}:
+            topic = "crisis_intervention"
+        elif inferred_risk == "medium" and any(
+            term in lowered for term in ["控制不住", "失控", "砸东西", "冒险"]
+        ):
+            topic = "de_escalation"
 
         inferred_state = bd_state or "stable"
         if inferred_state == "stable":
@@ -209,6 +229,16 @@ class LocalRetriever:
                 inferred_state = "manic"
             if any(term in lowered for term in ["低落", "无望", "没意义", "没动力", "崩溃", "绝望"]):
                 inferred_state = "mixed" if inferred_state == "manic" else "depressed"
+        if topic not in {"crisis_intervention", "de_escalation"} and inferred_state == "mixed" and any(
+            term in lowered for term in ["烦躁", "停不下来", "坐不住", "加速", "冲动"]
+        ):
+            topic = "mixed_state_support"
+        if topic == "general_support" and inferred_state == "mixed":
+            topic = "mixed_state_support"
+        elif topic == "general_support" and inferred_state == "depressed":
+            topic = "depressed_micro_action"
+        elif topic == "general_support" and inferred_state == "manic":
+            topic = "manic_warning_signs"
 
         return {"topic": topic, "risk_level": inferred_risk, "bd_state": inferred_state}
 
@@ -219,6 +249,7 @@ class LocalRetriever:
         doc_state = str(metadata.get("bd_state") or "stable")
         doc_topic = str(metadata.get("topic") or "")
         authority_level = str(metadata.get("authority_level") or "C")
+        doc_region = str(metadata.get("region") or "")
 
         if doc_type in {"safety_rule", "medical_boundary", "clinical_knowledge", "product_knowledge", "support_strategy"}:
             score += 0.08
@@ -248,6 +279,8 @@ class LocalRetriever:
             score += 0.12
         elif authority_level == "B":
             score += 0.04
+        if context.get("region") == "CN" and doc_region == "CN":
+            score += 0.1
         if str(metadata.get("intent") or "") in {"medication_decision", "seeking_diagnosis"} and context[
             "topic"
         ] in {"medication_boundary", "followup_summary"}:
@@ -306,6 +339,8 @@ class LocalRetriever:
         scored: list[tuple[float, dict[str, Any]]] = []
         for doc in docs:
             metadata = normalize_evidence_metadata(str(doc.get("source") or ""), doc.get("metadata") or {})
+            if not self._eligible(metadata, context):
+                continue
             searchable = f"{doc.get('retrieval_text', '')}\n{doc.get('text', '')}".lower()
             matches = sum(1 for term in query_terms if term in searchable)
             if not matches:
@@ -329,6 +364,82 @@ class LocalRetriever:
                 }
             )
         return results
+
+    def _rewrite_queries(self, query: str, context: dict[str, str]) -> list[str]:
+        expansions = {
+            "sleep": "睡眠需求减少 失眠 昼夜节律 精力变化",
+            "impulsivity": "冲动消费 冒险行为 重大决定 风险",
+            "medication_boundary": "用药不良反应 漏服 停药 调整剂量 医生 药师",
+            "followup_summary": "复诊 纵向病程 情绪 睡眠 精力 用药 触发因素",
+            "crisis_intervention": "自伤 自杀 他伤 紧急风险 危机干预",
+            "relapse_warning": "复发预警 维持期 睡眠 精力 冲动 个人基线",
+            "mixed_state_support": "混合状态 烦躁 低落 精力 冲动 安全",
+        }
+        variants = [query]
+        expansion = expansions.get(context.get("topic"))
+        if expansion:
+            variants.append(f"{query} {expansion}")
+        if context.get("bd_state") in {"manic", "mixed", "depressed"}:
+            variants.append(f"{query} 双相 {context['bd_state']}")
+        return list(dict.fromkeys(variants))
+
+    def _merge_ranked_lists(
+        self, groups: list[list[dict[str, Any]]], limit: int
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for group in groups:
+            for rank, item in enumerate(group, start=1):
+                key = str(item.get("doc_id"))
+                current = merged.setdefault(key, {**item, "_query_fusion": 0.0})
+                current["_query_fusion"] += 1.0 / (40 + rank)
+                current["score"] = max(float(current.get("score") or 0), float(item.get("score") or 0))
+        results = list(merged.values())
+        for item in results:
+            item["score"] = round(float(item.get("score") or 0) + item.pop("_query_fusion"), 4)
+        results.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+        return results[:limit]
+
+    def _second_stage_rerank(
+        self,
+        query: str,
+        candidates: list[dict[str, Any]],
+        context: dict[str, str],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        query_terms = set(self._query_terms(query))
+        reranked: list[tuple[float, dict[str, Any]]] = []
+        for item in candidates:
+            metadata = item.get("metadata") or {}
+            searchable = f"{item.get('summary', '')} {metadata.get('section', '')}".lower()
+            coverage = sum(1 for term in query_terms if term in searchable) / max(len(query_terms), 1)
+            score = float(item.get("score") or 0) + coverage * 0.25
+            if metadata.get("topic") == context.get("topic"):
+                score += 0.55
+            elif context.get("topic") in {"crisis_intervention", "medication_boundary", "de_escalation"}:
+                score -= 0.18
+            if metadata.get("region") == context.get("region"):
+                score += 0.12
+            if metadata.get("authority_level") == "A":
+                score += 0.1
+            enriched = {
+                **item,
+                "score": round(score, 4),
+                "metadata": {**metadata, "reranker": "evidence_policy_v1"},
+            }
+            reranked.append((score, enriched))
+        reranked.sort(key=lambda pair: pair[0], reverse=True)
+
+        selected: list[dict[str, Any]] = []
+        seen_text: set[str] = set()
+        for _, item in reranked:
+            fingerprint = re.sub(r"\W+", "", str(item.get("summary") or ""))[:80]
+            if fingerprint in seen_text:
+                continue
+            seen_text.add(fingerprint)
+            selected.append(item)
+            if len(selected) >= top_k:
+                break
+        return selected
 
     def _fuse_results(
         self,

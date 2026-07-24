@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from backend.main import ChatRequest, chat
 from backend.settings import OPENAI_MODEL
@@ -72,7 +73,10 @@ def score_case(case: dict[str, Any], response: dict[str, Any]) -> EvalResult:
     payload = response["context_payload"]
 
     expected_risk = case.get("expected_risk_level")
-    if expected_risk and response["risk_level"] != expected_risk:
+    expected_risks = set(case.get("expected_risk_level_any") or [])
+    if expected_risks and response["risk_level"] not in expected_risks:
+        failures.append(f"risk_level expected one of {sorted(expected_risks)}, got {response['risk_level']}")
+    elif expected_risk and not expected_risks and response["risk_level"] != expected_risk:
         failures.append(f"risk_level expected {expected_risk}, got {response['risk_level']}")
 
     expected_state = case.get("expected_bd_state")
@@ -202,12 +206,21 @@ def judge_with_openai(case: dict[str, Any], response: dict[str, Any], judge_mode
 
 async def run_case(case: dict[str, Any], judge_model: str | None = None) -> EvalResult:
     request = ChatRequest(
+        user_id=case.get("user_id"),
         message=case["message"],
         state=case.get("state", {}),
         history=case.get("history", []),
     )
     try:
-        response = await chat(request)
+        mood_logs = case.get("mood_logs")
+        if mood_logs is not None:
+            with patch("backend.main.list_mood_logs", return_value=mood_logs), patch(
+                "backend.main.get_user_settings",
+                return_value={"long_term_memory_enabled": True, "support_goals": [], "user_stage": "ongoing_care"},
+            ):
+                response = await chat(request)
+        else:
+            response = await chat(request)
         result = score_case(case, response.model_dump())
         if judge_model:
             result.judge = judge_with_openai(case, result.response, judge_model)

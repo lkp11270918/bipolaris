@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from backend.decision_pipeline import assess_turn, plan_response
-from backend.longitudinal import build_longitudinal_state
+from backend.longitudinal import build_longitudinal_state, extract_dialogue_signals
 from backend.retriever import LocalRetriever
 
 
@@ -54,6 +54,10 @@ class LongitudinalStateTests(unittest.TestCase):
         changed = {item["metric"] for item in result["change_signals"]}
         self.assertTrue({"sleep", "energy", "impulse"}.issubset(changed))
         self.assertTrue(result["combined_signals"])
+        self.assertEqual(result["windows"]["3d"]["median_sleep"], 1.0)
+        self.assertEqual(result["windows"]["3d"]["range_energy"], [5.0, 5.0])
+        self.assertIn("source_dates", result["change_signals"][0])
+        self.assertGreaterEqual(result["longest_consecutive_warning_days"], 2)
 
     def test_insufficient_records_do_not_invent_trend(self) -> None:
         result = build_longitudinal_state(
@@ -61,6 +65,13 @@ class LongitudinalStateTests(unittest.TestCase):
         )
         self.assertEqual(result["change_signals"], [])
         self.assertEqual(result["combined_signals"], [])
+
+    def test_explicit_dialogue_signals_are_structured_without_guessing(self) -> None:
+        signals = extract_dialogue_signals(["我这三天每天只睡 2 小时，但精力特别高，还想冲动花钱"])
+        metrics = {item.get("metric") or item.get("signal") for item in signals}
+        self.assertIn("sleep_hours", metrics)
+        self.assertIn("increased_energy", metrics)
+        self.assertIn("increased_impulsivity", metrics)
 
 
 if __name__ == "__main__":

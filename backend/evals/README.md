@@ -69,6 +69,62 @@ Current local smoke result:
 - MRR: 1.0
 - Authority-A hit rate: 1.0
 
+The expanded retrieval matrix contains 100 queries across crisis routing,
+de-escalation, medication boundaries, follow-up preparation, sleep/elevated
+energy, mixed states, depression, relapse warning, impulsivity and work support:
+
+```bash
+.venv/bin/python -m backend.evals.build_rag_benchmark
+.venv/bin/python -m backend.evals.run_rag_eval \
+  --cases backend/evals/rag_benchmark_100.jsonl
+```
+
+Current result:
+
+- Recall@5: 0.93
+- MRR: 0.8933
+- Authority-A hit rate for medical cases: 1.0
+- Strict top-1 cases: 86/100
+
+## Multi-turn Ablation
+
+Build the 200-case multi-turn matrix:
+
+```bash
+.venv/bin/python -m backend.evals.build_multiturn_benchmark
+```
+
+Run deterministic full/no-RAG/no-longitudinal ablations without API usage:
+
+```bash
+OPENAI_API_KEY='' .venv/bin/python -m backend.evals.run_ablation_comparison --skip-generic
+```
+
+Run a stratified live comparison of BiPolaris against the same model with only
+a generic assistant prompt:
+
+```bash
+.venv/bin/python -m backend.evals.run_ablation_comparison \
+  --stride 4 --limit 50 --variants full --generic-limit 50 --concurrency 6
+```
+
+The 2026-07-24 live run produced:
+
+- BiPolaris: 49/50 strict passes
+- Generic model: 36/50 strict passes
+- No human review and no LLM-as-judge were used
+
+Export actual user inputs, replies and failure reasons:
+
+```bash
+.venv/bin/python -m backend.evals.analyze_ablation_badcases \
+  backend/evals/results/ablation_latest.jsonl \
+  --output backend/evals/results/ablation_badcases.md
+```
+
+The machine-readable baseline is tracked in
+`backend/evals/baselines/stage4_2026-07-24.json`.
+
 The rule benchmark and RAG smoke set are regression checks, not a claim of
 overall conversational quality. Release decisions should additionally compare
 real model outputs with a blinded human review set.

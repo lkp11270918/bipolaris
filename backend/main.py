@@ -17,7 +17,7 @@ from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
 from .classification import classify_risk_semantically, classify_state_semantically
 from .crypto import encrypt_text
 from .decision_pipeline import TurnAssessment, assess_turn, plan_response
-from .longitudinal import build_longitudinal_state
+from .longitudinal import build_longitudinal_state, extract_dialogue_signals
 from .output_guardrails import apply_output_guardrail
 from .persistence import (
     delete_user_data,
@@ -541,6 +541,9 @@ def synthesize_context(req: ChatRequest) -> dict[str, Any]:
     state_result = infer_bd_state(req.message, req.state, req.history)
     inferred_state = state_result.state
     long_term_memory = build_long_term_memory(req.user_id, req.state)
+    long_term_memory["dialogue_signals"] = extract_dialogue_signals(
+        [item.content for item in req.history] + [req.message]
+    )
     assessment = assess_turn(
         req.message,
         safety.model_dump(),
