@@ -1,8 +1,7 @@
-.venv/
-.git/
-.DS_Store
-backend/.env
-backend/data/
-backend/evals/results/
-__pycache__/
-*.pyc
+# The FastAPI backend is deployed separately on Render.
+backend/
+render.yaml
+
+# Submission snapshot and internal product documentation are not part of the frontend build.
+bipolaris-submit/
+docs/

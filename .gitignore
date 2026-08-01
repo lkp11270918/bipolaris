@@ -15,3 +15,4 @@ backend/data/*
 !backend/data/knowledge/mainland_authoritative.jsonl
 backend/evals/results/
 backend/evals/dialogue_safety_benchmark.jsonl
+.vercel
