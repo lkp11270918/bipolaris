@@ -141,16 +141,18 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
       }
       setMessages((prev) => [...prev, aiMsg])
     } catch {
-      if (risk === "crisis") setShowCrisis(true)
+      const isCrisis = risk === "crisis"
+      if (isCrisis) setShowCrisis(true)
       trackEvent("chat_error", { stage: "request_chat_reply", local_risk: risk, checkin_state: checkinData.state })
       const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content:
-          "我这边暂时连接后端失败，但我仍然听到你了。请先把注意力放回此刻：喝一口水，坐稳，慢慢呼吸三次。如果你有伤害自己或他人的想法，请立即拨打 120 或希望24热线 400-161-9995。",
+        content: isCrisis
+          ? "我很在意你现在的安全。请先远离可能造成伤害的地点或物品，并立即联系一个能来到你身边的人。请拨打 120 或希望24热线 400-161-9995，优先让现实中的支持马上介入。"
+          : "刚才的回复没有成功生成。请稍后重新发送一次；你已经输入的内容仍保留在本次对话中。",
         risk,
         state: checkinData.state,
-        strategy: "offline fallback",
+        strategy: isCrisis ? "offline crisis fallback" : "connection retry",
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, aiMsg])

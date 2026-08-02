@@ -10,8 +10,7 @@ export default function TermsPage() {
           <section>
             <h2 className="text-lg font-semibold mb-2">1. 服务说明</h2>
             <p>
-              BiPolaris 提供 AI 情绪支持、状态记录、风险识别、危机资源提示和复诊辅助。服务处于早期阶段，
-              可能出现不准确、不完整或不适合你当前情况的回复。
+              BiPolaris 提供 AI 情绪支持、状态记录、风险识别、危机资源提示和复诊辅助，并根据用户反馈持续优化服务体验。
             </p>
           </section>
 

@@ -118,10 +118,6 @@ export function WelcomeScreen({ onComplete }: WelcomeScreenProps) {
                 title: "心理临床安全边界",
                 desc: "BiPolaris 在回复中设置危机识别、用药边界和专业求助引导，避免替代诊断、处方、治疗方案或急救服务。",
               },
-              {
-                title: "产品仍在早期阶段",
-                desc: "AI 存在错误和局限，请保持批判性判断。如有不适或不满意的回复，可以直接告诉我们。",
-              },
             ].map((item) => (
               <div key={item.title} className="bg-card rounded-2xl p-4 border border-border">
                 <h3 className="text-sm font-medium text-foreground mb-1">{item.title}</h3>
