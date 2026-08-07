@@ -2,6 +2,7 @@
 
 import type { CheckinData } from "@/components/checkin-screen"
 import type { SupportGoal, UserStage } from "@/lib/product-profile"
+import { clearConversationStorage } from "@/lib/conversations"
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "https://bipolaris-api.onrender.com"
@@ -11,6 +12,7 @@ const SESSION_ID_KEY = "bipolaris_session_id"
 const MOOD_LOG_KEY = "bipolaris_mood_logs"
 const USER_SETTINGS_KEY = "bipolaris_user_settings"
 const ONBOARDING_COMPLETE_KEY = "bipolaris_onboarding_complete"
+const DAILY_CHECKIN_DATE_KEY = "bipolaris_daily_checkin_date"
 
 export type BackendRisk = "low" | "medium" | "high" | "imminent" | "crisis"
 
@@ -119,6 +121,24 @@ export function markOnboardingComplete(): void {
   window.localStorage.setItem(ONBOARDING_COMPLETE_KEY, "true")
 }
 
+function localDateKey(date = new Date()): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+export function hasCompletedDailyCheckinToday(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.localStorage.getItem(DAILY_CHECKIN_DATE_KEY) === localDateKey()
+  )
+}
+
+export function markDailyCheckinComplete(): void {
+  window.localStorage.setItem(DAILY_CHECKIN_DATE_KEY, localDateKey())
+}
+
 export function trackEvent(eventName: string, properties: Record<string, unknown> = {}) {
   if (typeof window === "undefined") return
   const payload = {
@@ -200,6 +220,8 @@ export async function requestChatReply(
   message: string,
   checkin: CheckinData,
   history: ChatHistoryMessage[],
+  conversationId: string,
+  userMessageId: string,
 ): Promise<BackendChatResponse> {
   const startedAt = performance.now()
   trackEvent("message_sent", {
@@ -217,6 +239,8 @@ export async function requestChatReply(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       user_id: getAnonymousUserId(),
+      conversation_id: conversationId,
+      user_message_id: userMessageId,
       message,
       state: checkinToBackendState(checkin),
       history: history.slice(-40),
@@ -248,6 +272,88 @@ export async function requestChatReply(
     })
   }
   return data
+}
+
+export async function requestChatReplyStream(
+  message: string,
+  checkin: CheckinData,
+  history: ChatHistoryMessage[],
+  conversationId: string,
+  userMessageId: string,
+  onEvent: (event: { type: "status" | "delta" | "replace"; text: string }) => void,
+): Promise<BackendChatResponse> {
+  const startedAt = performance.now()
+  trackEvent("message_sent", {
+    message_length: message.length,
+    checkin_state: checkin.state,
+    history_turns: history.length,
+    streaming: true,
+  })
+  const response = await fetch(`${API_BASE_URL}/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
+    body: JSON.stringify({
+      user_id: getAnonymousUserId(),
+      conversation_id: conversationId,
+      user_message_id: userMessageId,
+      message,
+      state: checkinToBackendState(checkin),
+      history: history.slice(-20),
+    }),
+  })
+  if (!response.ok || !response.body) throw new Error(`Backend returned ${response.status}`)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let finalData: BackendChatResponse | null = null
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+    const lines = buffer.split("\n")
+    buffer = lines.pop() || ""
+    for (const line of lines) {
+      if (!line.trim()) continue
+      const event = JSON.parse(line) as {
+        type: "status" | "delta" | "replace" | "done"
+        text?: string
+        data?: BackendChatResponse
+      }
+      if (event.type === "done" && event.data) finalData = event.data
+      else if (event.text) onEvent({ type: event.type as "status" | "delta" | "replace", text: event.text })
+    }
+    if (done) break
+  }
+  if (!finalData) throw new Error("Streaming response ended without final data")
+
+  const retrieved =
+    (finalData.context_payload?.retrieved_examples as Array<Record<string, unknown>> | undefined) || []
+  trackEvent("assistant_reply_received", {
+    risk_level: finalData.risk_level,
+    bd_state: finalData.context_payload?.inferred_bd_state as string | undefined,
+    selected_strategy: finalData.selected_strategy,
+    used_openai: finalData.used_openai,
+    used_rag: retrieved.length > 0,
+    response_time_ms: Math.round(performance.now() - startedAt),
+    reply_length: finalData.reply.length,
+    streaming: true,
+  })
+  return finalData
+}
+
+export async function renameRemoteConversation(conversationId: string, title: string): Promise<void> {
+  await fetch(`${API_BASE_URL}/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: getAnonymousUserId(), title }),
+  })
+}
+
+export async function deleteRemoteConversation(conversationId: string): Promise<void> {
+  const params = new URLSearchParams({ user_id: getAnonymousUserId() })
+  await fetch(`${API_BASE_URL}/conversations/${encodeURIComponent(conversationId)}?${params.toString()}`, {
+    method: "DELETE",
+  })
 }
 
 export async function submitFeedback(payload: {
@@ -397,6 +503,8 @@ export async function deleteMyData(): Promise<void> {
   window.localStorage.removeItem(MOOD_LOG_KEY)
   window.localStorage.removeItem(USER_SETTINGS_KEY)
   window.localStorage.removeItem(ONBOARDING_COMPLETE_KEY)
+  window.localStorage.removeItem(DAILY_CHECKIN_DATE_KEY)
+  clearConversationStorage()
 }
 
 export async function syncMoodLog(log: MoodLog): Promise<void> {

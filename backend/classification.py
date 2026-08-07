@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+from threading import Lock
 from typing import Any
+
+from .settings import OPENAI_CLASSIFIER_MODEL, OPENAI_CLASSIFIER_TIMEOUT_SECONDS
 
 try:
     from openai import OpenAI
@@ -10,14 +13,30 @@ except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore[assignment]
 
 
-def _json_classify(instructions: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Best-effort semantic classifier. Callers must always provide a safe fallback."""
+_client: Any = None
+_client_lock = Lock()
+
+
+def _get_client() -> Any:
+    global _client
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or OpenAI is None:
         return None
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                _client = OpenAI(api_key=api_key, timeout=OPENAI_CLASSIFIER_TIMEOUT_SECONDS)
+    return _client
+
+
+def _json_classify(instructions: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Best-effort semantic classifier. Callers must always provide a safe fallback."""
+    client = _get_client()
+    if client is None:
+        return None
     try:
-        response = OpenAI(api_key=api_key).responses.create(
-            model=os.getenv("OPENAI_CLASSIFIER_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini")),
+        response = client.responses.create(
+            model=OPENAI_CLASSIFIER_MODEL,
             instructions=instructions,
             input=json.dumps(payload, ensure_ascii=False),
             max_output_tokens=220,

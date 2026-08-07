@@ -35,7 +35,10 @@ DISMISSIVE_PATTERNS = [
 ]
 
 MEDICATION_CONTEXT_TERMS = ["药", "停药", "加药", "减药", "换药", "补服", "漏服", "补一片", "补两片", "剂量", "副作用", "安眠药", "锂", "拉莫三嗪"]
-DIAGNOSIS_CONTEXT_TERMS = ["是不是双相", "是不是躁郁", "诊断", "确诊", "轻躁狂", "躁狂", "抑郁症"]
+DIAGNOSIS_CONTEXT_TERMS = [
+    "我是不是双相", "我是不是躁郁", "我是双相吗", "我是否有双相",
+    "这算躁狂吗", "帮我诊断", "给我诊断", "能确诊吗",
+]
 MEDIUM_SAFETY_TERMS = ["120", "放远", "拉开距离", "离开", "安全", "延迟", "延后", "暂停", "联系"]
 
 WRONG_HOTLINE_PATTERNS = [
@@ -72,6 +75,21 @@ def count_questions(text: str) -> int:
 
 def _matches_any(patterns: list[str], text: str) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def has_critical_stream_violation(text: str) -> bool:
+    """Block a completed streamed sentence before it can expose unsafe content."""
+    return any(
+        _matches_any(patterns, text)
+        for patterns in (
+            DIAGNOSIS_PATTERNS,
+            MEDICATION_PATTERNS,
+            HARM_ELABORATION_PATTERNS,
+            DISMISSIVE_PATTERNS,
+            WRONG_HOTLINE_PATTERNS,
+            PROMPT_LEAK_PATTERNS,
+        )
+    )
 
 
 def inspect_output(reply: str, payload: dict[str, Any]) -> OutputGuardrailResult:
@@ -202,6 +220,24 @@ def _safe_boundary_reply(payload: dict[str, Any], violations: list[str]) -> str:
             "如果你愿意，我们可以继续聊你此刻的感受或你真正想解决的问题。"
         )
 
+    if violations == ["too_many_questions"]:
+        reply = str(payload.get("candidate_reply") or "")
+        allowed = int((payload.get("response_plan") or {}).get("max_questions") or 1)
+        seen = 0
+
+        def replace_mark(match: re.Match[str]) -> str:
+            nonlocal seen
+            seen += 1
+            return match.group(0) if seen <= allowed else "。"
+
+        return re.sub(r"[？?]", replace_mark, reply)
+
+    if "dismissive_language" in violations:
+        return (
+            "我听见你现在的感受了，也不会把它轻描淡写。"
+            "如果你愿意，我们可以先从此刻最难承受的那一部分慢慢说起。"
+        )
+
     return (
         "我听到你现在并不好受。为了安全起见，我先不继续追问可能加重风险的细节。"
         "我们可以先把注意力放在此刻：坐稳、喝一口水、把可能让你冲动的东西放远，"
@@ -214,6 +250,7 @@ def apply_output_guardrail(reply: str, payload: dict[str, Any]) -> tuple[str, Ou
     if result.passed:
         return reply, result
 
-    guarded_reply = _safe_boundary_reply(payload, result.violations)
+    payload_with_candidate = {**payload, "candidate_reply": reply}
+    guarded_reply = _safe_boundary_reply(payload_with_candidate, result.violations)
     result.rewritten = guarded_reply != reply
     return guarded_reply, result

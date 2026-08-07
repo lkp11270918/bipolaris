@@ -65,6 +65,28 @@ EVENT_LOG_COLUMNS = [
     "platform",
 ]
 
+CONVERSATION_COLUMNS = [
+    "id",
+    "user_id",
+    "title",
+    "created_at",
+    "updated_at",
+    "checkin_snapshot",
+]
+
+CONVERSATION_MESSAGE_COLUMNS = [
+    "id",
+    "conversation_id",
+    "user_id",
+    "role",
+    "content",
+    "created_at",
+    "risk_level",
+    "mood_state",
+    "selected_strategy",
+    "used_openai",
+]
+
 MOOD_LOG_ENCRYPTED_COLUMNS = ["notes"]
 USER_SETTINGS_ENCRYPTED_COLUMNS = [
     "display_name",
@@ -74,6 +96,8 @@ USER_SETTINGS_ENCRYPTED_COLUMNS = [
     "emergency_contact_phone",
     "emergency_contact_relation",
 ]
+CONVERSATION_ENCRYPTED_COLUMNS = ["checkin_snapshot"]
+CONVERSATION_MESSAGE_ENCRYPTED_COLUMNS = ["content"]
 
 
 def encrypt_columns(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
@@ -175,6 +199,36 @@ def ensure_app_schema() -> None:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_user_id ON event_logs(user_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_event_name ON event_logs(event_name)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '新对话',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    checkin_snapshot TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_updated ON conversations(user_id, updated_at)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_messages (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    risk_level TEXT NOT NULL DEFAULT 'low',
+                    mood_state TEXT NOT NULL DEFAULT 'unknown',
+                    selected_strategy TEXT NOT NULL DEFAULT '',
+                    used_openai BOOLEAN NOT NULL DEFAULT FALSE
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversation_messages(conversation_id, created_at)")
         return
 
     with sqlite_connection() as conn:
@@ -250,6 +304,36 @@ def ensure_app_schema() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_user_id ON event_logs(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_event_name ON event_logs(event_name)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '新对话',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                checkin_snapshot TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_updated ON conversations(user_id, updated_at)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                risk_level TEXT NOT NULL DEFAULT 'low',
+                mood_state TEXT NOT NULL DEFAULT 'unknown',
+                selected_strategy TEXT NOT NULL DEFAULT '',
+                used_openai INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversation_messages(conversation_id, created_at)")
 
 
 def save_mood_log(row: dict[str, Any]) -> dict[str, Any]:
@@ -452,6 +536,174 @@ def get_user_settings(user_id: str) -> dict[str, Any] | None:
     return result
 
 
+def upsert_conversation(row: dict[str, Any]) -> dict[str, Any]:
+    ensure_app_schema()
+    normalized = {key: row.get(key) for key in CONVERSATION_COLUMNS}
+    snapshot = normalized.get("checkin_snapshot")
+    if not isinstance(snapshot, str):
+        normalized["checkin_snapshot"] = json.dumps(snapshot or {}, ensure_ascii=False)
+    values = encrypt_columns(normalized, CONVERSATION_ENCRYPTED_COLUMNS)
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            conn.execute(
+                """
+                INSERT INTO conversations (id, user_id, title, created_at, updated_at, checkin_snapshot)
+                VALUES (%(id)s, %(user_id)s, %(title)s, %(created_at)s, %(updated_at)s, %(checkin_snapshot)s)
+                ON CONFLICT (id) DO UPDATE SET
+                    title = CASE WHEN conversations.title = '新对话' THEN EXCLUDED.title ELSE conversations.title END,
+                    updated_at = EXCLUDED.updated_at,
+                    checkin_snapshot = EXCLUDED.checkin_snapshot
+                """,
+                values,
+            )
+    else:
+        with sqlite_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversations (id, user_id, title, created_at, updated_at, checkin_snapshot)
+                VALUES (:id, :user_id, :title, :created_at, :updated_at, :checkin_snapshot)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = CASE WHEN conversations.title = '新对话' THEN excluded.title ELSE conversations.title END,
+                    updated_at = excluded.updated_at,
+                    checkin_snapshot = excluded.checkin_snapshot
+                """,
+                values,
+            )
+    result = decrypt_columns(values, CONVERSATION_ENCRYPTED_COLUMNS)
+    try:
+        result["checkin_snapshot"] = json.loads(result.get("checkin_snapshot") or "{}")
+    except json.JSONDecodeError:
+        result["checkin_snapshot"] = {}
+    return result
+
+
+def save_conversation_message(row: dict[str, Any]) -> dict[str, Any]:
+    ensure_app_schema()
+    values = encrypt_columns(
+        {key: row.get(key) for key in CONVERSATION_MESSAGE_COLUMNS},
+        CONVERSATION_MESSAGE_ENCRYPTED_COLUMNS,
+    )
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            conn.execute(
+                """
+                INSERT INTO conversation_messages (
+                    id, conversation_id, user_id, role, content, created_at,
+                    risk_level, mood_state, selected_strategy, used_openai
+                ) VALUES (
+                    %(id)s, %(conversation_id)s, %(user_id)s, %(role)s, %(content)s, %(created_at)s,
+                    %(risk_level)s, %(mood_state)s, %(selected_strategy)s, %(used_openai)s
+                )
+                ON CONFLICT (id) DO NOTHING
+                """,
+                values,
+            )
+    else:
+        with sqlite_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO conversation_messages (
+                    id, conversation_id, user_id, role, content, created_at,
+                    risk_level, mood_state, selected_strategy, used_openai
+                ) VALUES (
+                    :id, :conversation_id, :user_id, :role, :content, :created_at,
+                    :risk_level, :mood_state, :selected_strategy, :used_openai
+                )
+                """,
+                values,
+            )
+    return decrypt_columns(values, CONVERSATION_MESSAGE_ENCRYPTED_COLUMNS)
+
+
+def list_conversations(user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    ensure_app_schema()
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            rows = conn.execute(
+                """
+                SELECT id, user_id, title, created_at, updated_at, checkin_snapshot
+                FROM conversations WHERE user_id = %s ORDER BY updated_at DESC LIMIT %s
+                """,
+                (user_id, limit),
+            ).fetchall()
+    else:
+        with sqlite_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, user_id, title, created_at, updated_at, checkin_snapshot
+                FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        result = decrypt_columns(dict(row), CONVERSATION_ENCRYPTED_COLUMNS)
+        try:
+            result["checkin_snapshot"] = json.loads(result.get("checkin_snapshot") or "{}")
+        except json.JSONDecodeError:
+            result["checkin_snapshot"] = {}
+        results.append(result)
+    return results
+
+
+def list_conversation_messages(user_id: str, conversation_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    ensure_app_schema()
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            rows = conn.execute(
+                """
+                SELECT id, conversation_id, user_id, role, content, created_at,
+                       risk_level, mood_state, selected_strategy, used_openai
+                FROM conversation_messages
+                WHERE user_id = %s AND conversation_id = %s
+                ORDER BY created_at ASC LIMIT %s
+                """,
+                (user_id, conversation_id, limit),
+            ).fetchall()
+    else:
+        with sqlite_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, conversation_id, user_id, role, content, created_at,
+                       risk_level, mood_state, selected_strategy, used_openai
+                FROM conversation_messages
+                WHERE user_id = ? AND conversation_id = ?
+                ORDER BY created_at ASC LIMIT ?
+                """,
+                (user_id, conversation_id, limit),
+            ).fetchall()
+    return [decrypt_columns(dict(row), CONVERSATION_MESSAGE_ENCRYPTED_COLUMNS) for row in rows]
+
+
+def delete_conversation(user_id: str, conversation_id: str) -> None:
+    ensure_app_schema()
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            conn.execute("DELETE FROM conversation_messages WHERE user_id = %s AND conversation_id = %s", (user_id, conversation_id))
+            conn.execute("DELETE FROM conversations WHERE user_id = %s AND id = %s", (user_id, conversation_id))
+        return
+    with sqlite_connection() as conn:
+        conn.execute("DELETE FROM conversation_messages WHERE user_id = ? AND conversation_id = ?", (user_id, conversation_id))
+        conn.execute("DELETE FROM conversations WHERE user_id = ? AND id = ?", (user_id, conversation_id))
+
+
+def rename_conversation(user_id: str, conversation_id: str, title: str) -> None:
+    ensure_app_schema()
+    updated_at = datetime.now(timezone.utc).isoformat()
+    if use_postgres():
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:  # type: ignore[union-attr]
+            conn.execute(
+                "UPDATE conversations SET title = %s, updated_at = %s WHERE user_id = %s AND id = %s",
+                (title, updated_at, user_id, conversation_id),
+            )
+        return
+    with sqlite_connection() as conn:
+        conn.execute(
+            "UPDATE conversations SET title = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+            (title, updated_at, user_id, conversation_id),
+        )
+
+
 def delete_user_data(user_id: str) -> None:
     ensure_app_schema()
     if use_postgres():
@@ -459,12 +711,16 @@ def delete_user_data(user_id: str) -> None:
             conn.execute("DELETE FROM mood_logs WHERE user_id = %s", (user_id,))
             conn.execute("DELETE FROM user_settings WHERE user_id = %s", (user_id,))
             conn.execute("DELETE FROM event_logs WHERE user_id = %s", (user_id,))
+            conn.execute("DELETE FROM conversation_messages WHERE user_id = %s", (user_id,))
+            conn.execute("DELETE FROM conversations WHERE user_id = %s", (user_id,))
         return
 
     with sqlite_connection() as conn:
         conn.execute("DELETE FROM mood_logs WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM event_logs WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM conversation_messages WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
 
 
 def save_event_log(row: dict[str, Any]) -> dict[str, Any]:

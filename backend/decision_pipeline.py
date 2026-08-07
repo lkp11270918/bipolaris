@@ -118,7 +118,7 @@ def assess_turn(
         state_confidence=float(state_analysis.get("confidence") or 0),
         evidence=evidence,
         longitudinal_signals=longitudinal_signals,
-        needs_rag=user_need not in {"crisis_help"},
+        needs_rag=user_need in {"medication_question", "state_check", "record_review", "information"},
         needs_medical_facts=user_need in {"medication_question", "state_check", "information"},
         uncertainty=bd_state == "unknown"
         or bool(state_analysis.get("conflict"))

@@ -115,11 +115,7 @@ export function SettingsScreen() {
 
   async function handleDeleteData() {
     await deleteMyData().catch(() => {})
-    const reset = getUserSettings()
-    setSettings(reset)
-    setDraft(reset)
-    setModal(null)
-    setSavedHint("本机与云端数据已请求删除")
+    window.location.reload()
   }
 
   const displayName = settings.displayName || "匿名用户"

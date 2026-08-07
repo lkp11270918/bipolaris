@@ -6,11 +6,13 @@ import re
 import time
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .prompting import DATASET_NOTES, RETRIEVAL_SEEDS, SYSTEM_PROMPT
@@ -18,15 +20,21 @@ from .classification import classify_risk_semantically, classify_state_semantica
 from .crypto import encrypt_text
 from .decision_pipeline import TurnAssessment, assess_turn, plan_response
 from .longitudinal import build_longitudinal_state, extract_dialogue_signals
-from .output_guardrails import apply_output_guardrail
+from .output_guardrails import apply_output_guardrail, has_critical_stream_violation
 from .persistence import (
+    delete_conversation,
     delete_user_data,
     get_user_settings,
+    list_conversation_messages,
+    list_conversations,
     list_event_logs,
     list_mood_logs,
+    rename_conversation,
+    save_conversation_message,
     save_event_log,
     save_mood_log,
     save_user_settings,
+    upsert_conversation,
 )
 from .retriever import LocalRetriever
 from .settings import (
@@ -37,6 +45,8 @@ from .settings import (
     MAX_QUESTIONS_PER_REPLY,
     ADMIN_METRICS_TOKEN,
     OPENAI_MODEL,
+    OPENAI_FAST_MODEL,
+    OPENAI_GENERATION_TIMEOUT_SECONDS,
     RAG_MAX_HISTORY,
     RAG_MIN_SCORE,
     RAG_TOP_K,
@@ -82,6 +92,12 @@ MANIC_TERMS = ["睡不着", "不需要睡", "精力很高", "停不下来", "脑
 DEPRESSED_TERMS = ["低落", "没力气", "无望", "没意义", "疲惫", "不想动", "撑不住", "愧疚", "没动力", "孤独", "绝望"]
 MANIC_WARNING_TERMS = ["睡眠减少", "精力充沛", "想法加速", "话多", "冲动消费", "冒险", "易怒"]
 DEPRESSED_WARNING_TERMS = ["自我评价很低", "无望", "低落", "没动力", "无法起床"]
+SEMANTIC_RISK_REVIEW_TERMS = [
+    "死", "轻生", "自杀", "自残", "伤害", "结束", "消失", "活不下", "不想活",
+    "撑不住", "受不了", "绝望", "无望", "负担", "失控", "控制不住", "吞药",
+    "过量", "楼顶", "天台", "桥上", "刀", "绳", "报复", "杀", "危险",
+    "suicide", "kill myself", "self-harm", "overdose", "want to die", "end my life",
+]
 
 NEGATED_HARM_PATTERNS = [
     r"(没有|并没有|从没|不会|不打算|不是).{0,8}(自杀|轻生|自残|伤害自己|伤害别人)",
@@ -121,6 +137,8 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     user_id: str | None = Field(default=None, max_length=120)
+    conversation_id: str | None = Field(default=None, max_length=120)
+    user_message_id: str | None = Field(default=None, max_length=120)
     message: str
     state: UserState = Field(default_factory=UserState)
     history: list[ChatMessage] = Field(default_factory=list)
@@ -153,6 +171,11 @@ class ChatResponse(BaseModel):
     assessment: dict[str, Any] = Field(default_factory=dict)
     response_plan: dict[str, Any] = Field(default_factory=dict)
     pipeline_version: str = "decision-strategy-response-v1"
+
+
+class ConversationRenameRequest(BaseModel):
+    user_id: str = Field(min_length=3, max_length=120)
+    title: str = Field(min_length=1, max_length=30)
 
 
 class FeedbackRequest(BaseModel):
@@ -258,6 +281,21 @@ app.add_middleware(
 )
 
 retriever = LocalRetriever(api_key=os.getenv("OPENAI_API_KEY"))
+_openai_client = (
+    OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        timeout=OPENAI_GENERATION_TIMEOUT_SECONDS,
+    )
+    if OpenAI is not None and os.getenv("OPENAI_API_KEY")
+    else None
+)
+
+
+def get_openai_client(api_key: str) -> Any:
+    global _openai_client
+    if _openai_client is None and OpenAI is not None:
+        _openai_client = OpenAI(api_key=api_key, timeout=OPENAI_GENERATION_TIMEOUT_SECONDS)
+    return _openai_client
 
 
 def normalize_text(text: str) -> str:
@@ -325,7 +363,19 @@ def safety_filter(
         confidence=0.7, evidence=[], recommended_action="continue_support", source="fallback")
 
 
-def infer_bd_state(message: str, state: UserState, history: list[ChatMessage] | None = None) -> StateResult:
+def needs_semantic_risk_review(req: ChatRequest) -> bool:
+    if req.state.mood_state in {"depressed", "mixed", "manic"}:
+        return True
+    recent_text = " ".join([item.content for item in req.history[-4:]] + [req.message]).lower()
+    return any(term in recent_text for term in SEMANTIC_RISK_REVIEW_TERMS)
+
+
+def infer_bd_state(
+    message: str,
+    state: UserState,
+    history: list[ChatMessage] | None = None,
+    semantic_enabled: bool = True,
+) -> StateResult:
     normalized = normalize_text(message)
     warning_text = " ".join(state.warning_signs)
     manic_score = sum(1 for term in MANIC_TERMS if term in normalized)
@@ -349,7 +399,11 @@ def infer_bd_state(message: str, state: UserState, history: list[ChatMessage] | 
     if state.mood_state == "stable" and 4 <= state.energy <= 6 and state.impulsivity <= 4 and state.sleep >= 5:
         return StateResult(state="stable", confidence=0.78, evidence=["stable_self_report_and_metrics"])
 
-    semantic = classify_state_semantically(message, state.model_dump(), [x.model_dump() for x in (history or [])])
+    semantic = (
+        classify_state_semantically(message, state.model_dump(), [x.model_dump() for x in (history or [])])
+        if semantic_enabled
+        else None
+    )
     if semantic:
         label = str(semantic.get("state", "unknown"))
         if label not in {"stable", "manic", "depressed", "mixed", "unknown"}:
@@ -537,8 +591,19 @@ def detect_prompt_attack(message: str) -> dict[str, Any]:
 
 
 def synthesize_context(req: ChatRequest) -> dict[str, Any]:
-    safety = safety_filter(req.message, req.history)
-    state_result = infer_bd_state(req.message, req.state, req.history)
+    pipeline_started = time.perf_counter()
+    rule_safety = safety_filter(req.message, req.history, semantic_enabled=False)
+    if rule_safety.should_override_llm:
+        safety = rule_safety
+        state_result = infer_bd_state(req.message, req.state, req.history, semantic_enabled=False)
+    else:
+        semantic_risk_enabled = needs_semantic_risk_review(req)
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="bipolaris-classifier") as executor:
+            safety_future = executor.submit(safety_filter, req.message, req.history, semantic_risk_enabled)
+            state_future = executor.submit(infer_bd_state, req.message, req.state, req.history)
+            safety = safety_future.result()
+            state_result = state_future.result()
+    classification_ms = round((time.perf_counter() - pipeline_started) * 1000)
     inferred_state = state_result.state
     long_term_memory = build_long_term_memory(req.user_id, req.state)
     long_term_memory["dialogue_signals"] = extract_dialogue_signals(
@@ -550,7 +615,13 @@ def synthesize_context(req: ChatRequest) -> dict[str, Any]:
         state_result.model_dump(),
         long_term_memory,
     )
-    retrieved_examples = retrieve_examples(req.message, inferred_state, assessment)
+    retrieval_started = time.perf_counter()
+    retrieved_examples = (
+        retrieve_examples(req.message, inferred_state, assessment)
+        if assessment.needs_rag
+        else []
+    )
+    retrieval_ms = round((time.perf_counter() - retrieval_started) * 1000)
     response_plan = plan_response(
         assessment,
         retrieved_examples,
@@ -574,13 +645,18 @@ def synthesize_context(req: ChatRequest) -> dict[str, Any]:
         "long_term_memory": long_term_memory,
         "conversation_memory": build_history_memory(req.history),
         "prompt_attack": detect_prompt_attack(req.message),
+        "performance": {
+            "classification_ms": classification_ms,
+            "retrieval_ms": retrieval_ms,
+            "rag_skipped": not assessment.needs_rag,
+        },
         "response_policy": {
             "max_advice_items": MAX_ADVICE_ITEMS,
             "max_questions_per_reply": MAX_QUESTIONS_PER_REPLY,
             "preferred_rag_top_k": RAG_TOP_K,
             "rag_min_score": RAG_MIN_SCORE,
         },
-        "dialogue_history": [message.model_dump() for message in req.history[-min(RAG_MAX_HISTORY, 6):]],
+        "dialogue_history": [message.model_dump() for message in req.history[-min(RAG_MAX_HISTORY, 4):]],
         "latest_user_message": req.message,
     }
 
@@ -677,15 +753,27 @@ def build_model_input(payload: dict[str, Any]) -> str:
     )
 
 
+def select_generation_model(payload: dict[str, Any]) -> str:
+    assessment = payload.get("turn_assessment") or {}
+    if (
+        assessment.get("user_need") in {
+            "emotional_support", "planning", "record_review", "information", "state_check"
+        }
+        and str(assessment.get("risk_level") or "low") not in {"high", "imminent", "crisis"}
+    ):
+        return OPENAI_FAST_MODEL
+    return OPENAI_MODEL
+
+
 async def call_openai(payload: dict[str, Any]) -> tuple[str, bool]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or OpenAI is None:
         return fallback_reply(payload), False
 
-    client = OpenAI(api_key=api_key)
+    client = get_openai_client(api_key)
     try:
         response = client.responses.create(
-            model=OPENAI_MODEL,
+            model=select_generation_model(payload),
             instructions=SYSTEM_PROMPT,
             input=build_model_input(payload),
             max_output_tokens=MAX_OUTPUT_TOKENS,
@@ -950,9 +1038,69 @@ def remove_user_data(req: DeleteUserDataRequest) -> dict[str, str]:
     return {"status": "deleted"}
 
 
+@app.get("/conversations")
+def read_conversations(user_id: str = Query(min_length=3, max_length=120)) -> list[dict[str, Any]]:
+    return list_conversations(user_id)
+
+
+@app.get("/conversations/{conversation_id}/messages")
+def read_conversation_messages(
+    conversation_id: str,
+    user_id: str = Query(min_length=3, max_length=120),
+) -> list[dict[str, Any]]:
+    return list_conversation_messages(user_id, conversation_id)
+
+
+@app.patch("/conversations/{conversation_id}")
+def update_conversation_title(conversation_id: str, req: ConversationRenameRequest) -> dict[str, str]:
+    rename_conversation(req.user_id, conversation_id, req.title.strip())
+    return {"status": "updated"}
+
+
+@app.delete("/conversations/{conversation_id}")
+def remove_conversation(
+    conversation_id: str,
+    user_id: str = Query(min_length=3, max_length=120),
+) -> dict[str, str]:
+    delete_conversation(user_id, conversation_id)
+    return {"status": "deleted"}
+
+
+def derive_conversation_title(message: str) -> str:
+    normalized = re.sub(r"\s+", " ", message).strip()
+    first_sentence = re.split(r"[。！？!?\n]", normalized, maxsplit=1)[0] or normalized
+    return f"{first_sentence[:16]}…" if len(first_sentence) > 16 else first_sentence or "新对话"
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest) -> ChatResponse:
     started_at = time.perf_counter()
+    now = datetime.now().isoformat(timespec="milliseconds")
+    if req.user_id and req.conversation_id:
+        upsert_conversation(
+            {
+                "id": req.conversation_id,
+                "user_id": req.user_id,
+                "title": derive_conversation_title(req.message),
+                "created_at": now,
+                "updated_at": now,
+                "checkin_snapshot": req.state.model_dump(),
+            }
+        )
+        save_conversation_message(
+            {
+                "id": req.user_message_id or str(uuid.uuid4()),
+                "conversation_id": req.conversation_id,
+                "user_id": req.user_id,
+                "role": "user",
+                "content": req.message,
+                "created_at": now,
+                "risk_level": "pending",
+                "mood_state": req.state.mood_state,
+                "selected_strategy": "",
+                "used_openai": False,
+            }
+        )
     payload = synthesize_context(req)
     safety = payload["safety"]
     if safety["should_override_llm"]:
@@ -977,6 +1125,21 @@ async def chat(req: ChatRequest) -> ChatResponse:
         response_plan=payload["response_plan"],
         pipeline_version=payload["pipeline_version"],
     )
+    if req.user_id and req.conversation_id:
+        save_conversation_message(
+            {
+                "id": str(uuid.uuid4()),
+                "conversation_id": req.conversation_id,
+                "user_id": req.user_id,
+                "role": "assistant",
+                "content": response.reply,
+                "created_at": datetime.now().isoformat(timespec="milliseconds"),
+                "risk_level": response.risk_level,
+                "mood_state": payload.get("inferred_bd_state") or "unknown",
+                "selected_strategy": response.selected_strategy,
+                "used_openai": response.used_openai,
+            }
+        )
     latency_ms = round((time.perf_counter() - started_at) * 1000)
     append_jsonl(
         INTERACTION_LOG_PATH,
@@ -1002,3 +1165,167 @@ async def chat(req: ChatRequest) -> ChatResponse:
         },
     )
     return response
+
+
+def _stream_event(event_type: str, **payload: Any) -> str:
+    return json.dumps({"type": event_type, **payload}, ensure_ascii=False) + "\n"
+
+
+@app.post("/chat/stream")
+def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """Stream safe, sentence-sized reply chunks while preserving the final output guardrail."""
+
+    def generate():
+        started_at = time.perf_counter()
+        now = datetime.now().isoformat(timespec="milliseconds")
+        if req.user_id and req.conversation_id:
+            upsert_conversation(
+                {
+                    "id": req.conversation_id,
+                    "user_id": req.user_id,
+                    "title": derive_conversation_title(req.message),
+                    "created_at": now,
+                    "updated_at": now,
+                    "checkin_snapshot": req.state.model_dump(),
+                }
+            )
+            save_conversation_message(
+                {
+                    "id": req.user_message_id or str(uuid.uuid4()),
+                    "conversation_id": req.conversation_id,
+                    "user_id": req.user_id,
+                    "role": "user",
+                    "content": req.message,
+                    "created_at": now,
+                    "risk_level": "pending",
+                    "mood_state": req.state.mood_state,
+                    "selected_strategy": "",
+                    "used_openai": False,
+                }
+            )
+
+        yield _stream_event("status", stage="classifying", text="正在理解你刚才说的内容…")
+        payload = synthesize_context(req)
+        safety = payload["safety"]
+        reply = ""
+        used_openai = False
+
+        if safety["should_override_llm"]:
+            reply = crisis_reply(payload)
+            yield _stream_event("replace", text=reply)
+        else:
+            client = get_openai_client(os.getenv("OPENAI_API_KEY", ""))
+            if client is None:
+                reply = fallback_reply(payload)
+                yield _stream_event("replace", text=reply)
+            else:
+                yield _stream_event("status", stage="generating", text="正在组织一段更贴合你的回复…")
+                buffer = ""
+                streamed_reply = ""
+                stream_blocked = False
+                try:
+                    stream = client.responses.create(
+                        model=select_generation_model(payload),
+                        instructions=SYSTEM_PROMPT,
+                        input=build_model_input(payload),
+                        max_output_tokens=MAX_OUTPUT_TOKENS,
+                        stream=True,
+                    )
+                    for event in stream:
+                        if getattr(event, "type", "") != "response.output_text.delta":
+                            continue
+                        buffer += str(getattr(event, "delta", ""))
+                        while True:
+                            match = re.search(r"[。！？!?\n]", buffer)
+                            if not match:
+                                break
+                            boundary = match.end()
+                            sentence, buffer = buffer[:boundary], buffer[boundary:]
+                            if has_critical_stream_violation(sentence):
+                                stream_blocked = True
+                                break
+                            streamed_reply += sentence
+                            yield _stream_event("delta", text=sentence)
+                        if stream_blocked:
+                            break
+                    if stream_blocked:
+                        reply = fallback_reply(payload)
+                        yield _stream_event("replace", text=reply)
+                    else:
+                        if buffer:
+                            if has_critical_stream_violation(buffer):
+                                reply = fallback_reply(payload)
+                                yield _stream_event("replace", text=reply)
+                            else:
+                                streamed_reply += buffer
+                                yield _stream_event("delta", text=buffer)
+                                reply = streamed_reply
+                        else:
+                            reply = streamed_reply
+                        used_openai = bool(reply)
+                except Exception as exc:
+                    payload["openai_error"] = {"type": exc.__class__.__name__, "message": str(exc)}
+                    reply = fallback_reply(payload)
+                    yield _stream_event("replace", text=reply)
+
+        reply, output_guardrail = apply_output_guardrail(reply, payload)
+        if output_guardrail.rewritten:
+            yield _stream_event("replace", text=reply)
+        payload["output_guardrail"] = {
+            "passed": output_guardrail.passed,
+            "violations": output_guardrail.violations,
+            "rewritten": output_guardrail.rewritten,
+        }
+        response = ChatResponse(
+            reply=reply,
+            risk_level=safety["risk_level"],
+            selected_strategy=payload["selected_support_strategy"],
+            context_payload=payload,
+            used_openai=used_openai,
+            assessment=payload["turn_assessment"],
+            response_plan=payload["response_plan"],
+            pipeline_version=payload["pipeline_version"],
+        )
+        if req.user_id and req.conversation_id:
+            save_conversation_message(
+                {
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": req.conversation_id,
+                    "user_id": req.user_id,
+                    "role": "assistant",
+                    "content": response.reply,
+                    "created_at": datetime.now().isoformat(timespec="milliseconds"),
+                    "risk_level": response.risk_level,
+                    "mood_state": payload.get("inferred_bd_state") or "unknown",
+                    "selected_strategy": response.selected_strategy,
+                    "used_openai": response.used_openai,
+                }
+            )
+        latency_ms = round((time.perf_counter() - started_at) * 1000)
+        append_jsonl(
+            INTERACTION_LOG_PATH,
+            {
+                "risk_level": response.risk_level,
+                "bd_state": payload.get("inferred_bd_state"),
+                "selected_strategy": response.selected_strategy,
+                "used_openai": response.used_openai,
+                "rag_ready": payload.get("rag_status", {}).get("ready"),
+                "rag_documents": payload.get("rag_status", {}).get("documents"),
+                "retrieved_count": len(payload.get("retrieved_examples") or []),
+                "output_guardrail_passed": output_guardrail.passed,
+                "output_guardrail_rewritten": output_guardrail.rewritten,
+                "output_guardrail_violations": output_guardrail.violations,
+                "latency_ms": latency_ms,
+                "first_chunk_streamed": True,
+                "message_length": len(req.message),
+                "history_turns": len(req.history),
+                **(payload.get("performance") or {}),
+            },
+        )
+        yield _stream_event("done", data=response.model_dump(), latency_ms=latency_ms)
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

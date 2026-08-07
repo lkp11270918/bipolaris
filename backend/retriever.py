@@ -134,12 +134,18 @@ class LocalRetriever:
         context["medical_fact_required"] = "true" if medical_fact_required else "false"
         context["allowed_authority_levels"] = ",".join(sorted(allowed_authority_levels or set()))
         candidate_k = max(top_k * 5, 20)
-        vector_results = self._vector_search(query, top_k=candidate_k, min_score=min_score, context=context)
         lexical_groups = [
             self._lexical_search(variant, top_k=candidate_k, context=context)
             for variant in self._rewrite_queries(query, context)
         ]
         lexical_results = self._merge_ranked_lists(lexical_groups, candidate_k)
+        # Most psychoeducation queries contain strong domain terms. Prefer the local index and
+        # only pay for a remote query embedding when lexical retrieval cannot fill the result set.
+        vector_results = (
+            []
+            if len(lexical_results) >= top_k
+            else self._vector_search(query, top_k=candidate_k, min_score=min_score, context=context)
+        )
         fused = self._fuse_results(vector_results, lexical_results, top_k=candidate_k, context=context)
         candidates = fused or lexical_results
         return self._second_stage_rerank(query, candidates, context, top_k)

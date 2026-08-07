@@ -1,34 +1,29 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Send, Loader2, ThumbsUp, ThumbsDown, X } from "lucide-react"
+import { Send, Loader2, ThumbsUp, ThumbsDown, X, PanelLeft, SquarePen } from "lucide-react"
 import type { CheckinData } from "./checkin-screen"
 import {
-  requestChatReply,
+  requestChatReplyStream,
   getUserSettings,
   getMoodLogs,
   submitFeedback,
   trackEvent,
-  type BackendRisk,
   type ChatHistoryMessage,
 } from "@/lib/bipolaris-api"
 import { CrisisSupportMode } from "@/components/crisis-support-mode"
 import { buildPersonalTrendMessage, getRecordingEncouragement } from "@/lib/personal-insights"
-
-interface Message {
-  id: string
-  role: "user" | "assistant"
-  content: string
-  risk?: "none" | BackendRisk
-  state?: string
-  strategy?: string
-  ragSources?: string[]
-  usedOpenAI?: boolean
-  timestamp: Date
-}
+import type { Conversation, ConversationMessage } from "@/lib/conversations"
 
 interface ChatScreenProps {
-  checkinData: CheckinData
+  conversation: Conversation
+  onUpdateMessages: (
+    conversationId: string,
+    updater: (messages: ConversationMessage[]) => ConversationMessage[],
+  ) => void
+  onDraftChange: (conversationId: string, draft: string) => void
+  onOpenSidebar: () => void
+  onNewConversation: () => void
 }
 
 // 危机关键词检测（演示用）
@@ -80,22 +75,33 @@ function RiskBadge({ risk }: { risk: string }) {
   )
 }
 
-export function ChatScreen({ checkinData }: ChatScreenProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "0",
-      role: "assistant",
-      content: getGreeting(checkinData),
-      risk: "none",
-      state: checkinData.state,
-      timestamp: new Date(),
-    },
-  ])
-  const [input, setInput] = useState("")
-  const [isTyping, setIsTyping] = useState(false)
-  const [showCrisis, setShowCrisis] = useState(false)
-  const [feedbackMessage, setFeedbackMessage] = useState<Message | null>(null)
+export function ChatScreen({
+  conversation,
+  onUpdateMessages,
+  onDraftChange,
+  onOpenSidebar,
+  onNewConversation,
+}: ChatScreenProps) {
+  const messages = conversation.messages
+  const input = conversation.draft
+  const checkinData = conversation.checkinSnapshot
+  const [pendingConversationIds, setPendingConversationIds] = useState<Set<string>>(() => new Set())
+  const [streamStartedConversationIds, setStreamStartedConversationIds] = useState<Set<string>>(() => new Set())
+  const [streamStatuses, setStreamStatuses] = useState<Record<string, string>>({})
+  const [crisisConversationIds, setCrisisConversationIds] = useState<Set<string>>(() => new Set())
+  const [feedbackMessage, setFeedbackMessage] = useState<ConversationMessage | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const isTyping = pendingConversationIds.has(conversation.id)
+  const showCrisis = crisisConversationIds.has(conversation.id)
+
+  function setConversationCrisis(conversationId: string, active: boolean) {
+    setCrisisConversationIds((previous) => {
+      const next = new Set(previous)
+      if (active) next.add(conversationId)
+      else next.delete(conversationId)
+      return next
+    })
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -104,30 +110,66 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
   async function sendText(text: string) {
     const trimmed = text.trim()
     if (!trimmed || isTyping) return
+    const conversationId = conversation.id
 
     const risk = detectRisk(trimmed)
-    if (["high", "imminent", "crisis"].includes(risk)) setShowCrisis(true)
+    if (["high", "imminent", "crisis"].includes(risk)) setConversationCrisis(conversationId, true)
 
-    const userMsg: Message = {
-      id: Date.now().toString(),
+    const userMsg: ConversationMessage = {
+      id: crypto.randomUUID(),
       role: "user",
       content: trimmed,
       risk,
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(),
     }
-    setMessages((prev) => [...prev, userMsg])
-    setInput("")
-    setIsTyping(true)
+    onUpdateMessages(conversationId, (previous) => [...previous, userMsg])
+    onDraftChange(conversationId, "")
+    setPendingConversationIds((previous) => new Set(previous).add(conversationId))
+    const streamingMessageId = crypto.randomUUID()
+    let streamedContent = ""
+    let streamMessageInserted = false
 
     try {
       const history: ChatHistoryMessage[] = [...messages, userMsg]
         .filter((msg) => msg.role === "user" || msg.role === "assistant")
         .slice(-40)
         .map((msg) => ({ role: msg.role, content: msg.content }))
-      const data = await requestChatReply(trimmed, checkinData, history)
-      if (["high", "imminent", "crisis"].includes(data.risk_level)) setShowCrisis(true)
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
+      const data = await requestChatReplyStream(
+        trimmed,
+        checkinData,
+        history,
+        conversationId,
+        userMsg.id,
+        (event) => {
+          if (event.type === "status") {
+            setStreamStatuses((previous) => ({ ...previous, [conversationId]: event.text }))
+            return
+          }
+          streamedContent = event.type === "replace" ? event.text : streamedContent + event.text
+          setStreamStartedConversationIds((previous) => new Set(previous).add(conversationId))
+          if (!streamMessageInserted) {
+            streamMessageInserted = true
+            onUpdateMessages(conversationId, (previous) => [
+              ...previous,
+              {
+                id: streamingMessageId,
+                role: "assistant",
+                content: streamedContent,
+                timestamp: new Date().toISOString(),
+              },
+            ])
+          } else {
+            onUpdateMessages(conversationId, (previous) =>
+              previous.map((message) =>
+                message.id === streamingMessageId ? { ...message, content: streamedContent } : message,
+              ),
+            )
+          }
+        },
+      )
+      if (["high", "imminent", "crisis"].includes(data.risk_level)) setConversationCrisis(conversationId, true)
+      const aiMsg: ConversationMessage = {
+        id: streamingMessageId,
         role: "assistant",
         content: data.reply,
         risk: data.risk_level,
@@ -137,15 +179,19 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
           .map((item) => item.source || "")
           .filter(Boolean),
         usedOpenAI: data.used_openai,
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
       }
-      setMessages((prev) => [...prev, aiMsg])
+      onUpdateMessages(conversationId, (previous) =>
+        streamMessageInserted
+          ? previous.map((message) => (message.id === streamingMessageId ? aiMsg : message))
+          : [...previous, aiMsg],
+      )
     } catch {
       const isCrisis = risk === "crisis"
-      if (isCrisis) setShowCrisis(true)
+      if (isCrisis) setConversationCrisis(conversationId, true)
       trackEvent("chat_error", { stage: "request_chat_reply", local_risk: risk, checkin_state: checkinData.state })
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
+      const aiMsg: ConversationMessage = {
+        id: streamingMessageId,
         role: "assistant",
         content: isCrisis
           ? "我很在意你现在的安全。请先远离可能造成伤害的地点或物品，并立即联系一个能来到你身边的人。请拨打 120 或希望24热线 400-161-9995，优先让现实中的支持马上介入。"
@@ -153,11 +199,29 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
         risk,
         state: checkinData.state,
         strategy: isCrisis ? "offline crisis fallback" : "connection retry",
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
       }
-      setMessages((prev) => [...prev, aiMsg])
+      onUpdateMessages(conversationId, (previous) =>
+        streamMessageInserted
+          ? previous.map((message) => (message.id === streamingMessageId ? aiMsg : message))
+          : [...previous, aiMsg],
+      )
     } finally {
-      setIsTyping(false)
+      setPendingConversationIds((previous) => {
+        const next = new Set(previous)
+        next.delete(conversationId)
+        return next
+      })
+      setStreamStartedConversationIds((previous) => {
+        const next = new Set(previous)
+        next.delete(conversationId)
+        return next
+      })
+      setStreamStatuses((previous) => {
+        const next = { ...previous }
+        delete next[conversationId]
+        return next
+      })
     }
   }
 
@@ -172,7 +236,7 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
     }
   }
 
-  function handleFeedback(msg: Message, label: "helpful" | "not_helpful") {
+  function handleFeedback(msg: ConversationMessage, label: "helpful" | "not_helpful") {
     if (label === "not_helpful") {
       setFeedbackMessage(msg)
       return
@@ -214,6 +278,13 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
       {/* 顶部状态栏 */}
       <div className="flex items-center justify-between px-5 py-3 bg-card border-b border-border">
         <div className="flex items-center gap-2">
+          <button
+            aria-label="打开历史对话"
+            onClick={onOpenSidebar}
+            className="w-8 h-8 -ml-2 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted"
+          >
+            <PanelLeft className="w-5 h-5" />
+          </button>
           <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center">
             <svg width="16" height="16" viewBox="0 0 32 32" fill="none">
               <path d="M16 4C16 4 8 10 8 18C8 22.4183 11.5817 26 16 26C20.4183 26 24 22.4183 24 18C24 10 16 4 16 4Z" fill="white" fillOpacity="0.9" />
@@ -227,6 +298,13 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
         </div>
         <div className="flex items-center gap-1.5">
           <StateTag state={checkinData.state} />
+          <button
+            aria-label="新建对话"
+            onClick={onNewConversation}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted"
+          >
+            <SquarePen className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
@@ -235,7 +313,7 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
         <div className="flex-1 min-h-0">
           <CrisisSupportMode
             onReturnToChat={() => {
-              setShowCrisis(false)
+              setConversationCrisis(conversation.id, false)
               trackEvent("crisis_mode_closed")
             }}
           />
@@ -266,7 +344,7 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
               {msg.role === "assistant" && (
                 <div className="flex items-center justify-between mt-3 pt-2 border-t border-border/50">
                   <span className="text-xs text-muted-foreground">
-                    {msg.timestamp.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                    {new Date(msg.timestamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
                   </span>
                   <div className="flex gap-1">
                     <button
@@ -290,11 +368,13 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
           </div>
         ))}
 
-        {isTyping && (
+        {isTyping && !streamStartedConversationIds.has(conversation.id) && (
           <div className="px-4 flex justify-start">
             <div className="bg-card border border-border rounded-3xl rounded-tl-lg px-4 py-3 flex items-center gap-2">
               <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
-              <span className="text-sm text-muted-foreground">正在思考…</span>
+              <span className="text-sm text-muted-foreground">
+                {streamStatuses[conversation.id] || "正在思考…"}
+              </span>
             </div>
           </div>
         )}
@@ -328,7 +408,7 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
         <div className="flex items-end gap-2 bg-card border border-border rounded-2xl px-4 py-2">
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => onDraftChange(conversation.id, e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="说说你现在的感受…"
             rows={1}
@@ -386,14 +466,14 @@ export function ChatScreen({ checkinData }: ChatScreenProps) {
   )
 }
 
-function isMedicationRelated(messages: Message[], index: number): boolean {
+function isMedicationRelated(messages: ConversationMessage[], index: number): boolean {
   const terms = ["用药", "服药", "漏服", "补服", "停药", "加药", "减药", "剂量", "药物", "副作用"]
   const current = messages[index]?.content || ""
   const previous = index > 0 && messages[index - 1]?.role === "user" ? messages[index - 1].content : ""
   return terms.some((term) => current.includes(term) || previous.includes(term))
 }
 
-function getGreeting(data: CheckinData): string {
+export function getGreeting(data: CheckinData): string {
   const hour = new Date().getHours()
   const greet = hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好"
 
